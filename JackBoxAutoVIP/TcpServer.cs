@@ -11,9 +11,9 @@ public class TcpServer
     private bool _isRunning;
     public string roomCode = "";
 
-    public TcpServer(string host, int port)
+    public TcpServer(int port)
     {
-        _server = new TcpListener(IPAddress.Parse(host), port);
+        _server = new TcpListener(IPAddress.Any, port);
         _server.Start();
         _isRunning = true;
     }
@@ -32,6 +32,7 @@ public class TcpServer
         var buffer = new byte[4096];
         while (_isRunning)
         {
+            Console.WriteLine($"device connected: {client.Client.RemoteEndPoint}");
             var stream = client.GetStream();
             var bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
             if (bytesRead == 0)
