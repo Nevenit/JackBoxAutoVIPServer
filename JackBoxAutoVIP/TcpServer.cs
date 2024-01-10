@@ -2,7 +2,7 @@
 using System.Net.Sockets;
 using System.Text;
 
-namespace JackBoxRoomCodeExtractor;
+namespace JackBoxAutoVIP;
 
 // Just a simple TCP server that listens for a connection and sends back the room code.
 public class TcpServer

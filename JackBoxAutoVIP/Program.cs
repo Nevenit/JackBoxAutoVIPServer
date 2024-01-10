@@ -4,7 +4,7 @@ using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Text;
 
-namespace JackBoxRoomCodeExtractor // Note: actual namespace depends on the project name.
+namespace JackBoxAutoVIP // Note: actual namespace depends on the project name.
 {
     internal class Program
     {
