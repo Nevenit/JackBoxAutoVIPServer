@@ -35,14 +35,23 @@ public class TcpServer
             Console.WriteLine($"device connected: {client.Client.RemoteEndPoint}");
             var stream = client.GetStream();
             var bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
+            
             if (bytesRead == 0)
             {
                 break; // Connection closed by client.
             }
-            byte[] byteData = Encoding.UTF8.GetBytes(roomCode);
             
-            // Send back the room code
-            await stream.WriteAsync(byteData, 0, byteData.Length);
+            // Parse client message
+            var clientMessage = Encoding.UTF8.GetString(buffer, 0, bytesRead).Trim();
+            Console.WriteLine($"Received message: {clientMessage}");
+
+            byte[] byteData;
+            if (clientMessage == "getRoomCode")
+            {
+                byteData = Encoding.UTF8.GetBytes(roomCode);
+                // Send back the room code
+                await stream.WriteAsync(byteData, 0, byteData.Length);
+            }
         }
         client.Close();
     }
