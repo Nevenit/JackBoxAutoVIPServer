@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Diagnostics;
 using System.ComponentModel;
+using System.Net.Http.Headers;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -16,6 +17,8 @@ namespace JackBoxAutoVIP // Note: actual namespace depends on the project name.
         
         static void Main(string[] args)
         {
+            
+            
             // Dictionary of game titles and their memory pointers.
             Dictionary<string, Int64[]> GameMemoryPointers = new Dictionary<string, Int64[]>();
             GameMemoryPointers.Add("The Jackbox Party Pack", new Int64[]{0x00E15620, 0x0, 0x88, 0x8, 0x10});
@@ -57,7 +60,6 @@ namespace JackBoxAutoVIP // Note: actual namespace depends on the project name.
                             {
                                 server.roomCode = roomCode;
                             }
-                            
                             System.Threading.Thread.Sleep(1000);
                         }
                     }
@@ -88,6 +90,7 @@ namespace JackBoxAutoVIP // Note: actual namespace depends on the project name.
         // Very basic check to see if the string is a valid room code.
         // We dont have a way to detect if the game is in the lobby or not, so we just check if the string is 4 characters long and all uppercase.
         // Its pretty unlikely that the pointer will point to a random 4 character string that is all uppercase so its probably good enough.
+        // We then check if the room code is valid by making a request to the JackBox API.
         public static bool IsCodeValid(string code)
         {
             if (code.Length != 4)
@@ -101,6 +104,16 @@ namespace JackBoxAutoVIP // Note: actual namespace depends on the project name.
                 {
                     return false;
                 }
+            }
+            
+            HttpClient client = new HttpClient();
+            client.DefaultRequestHeaders.Accept.Add(
+                new MediaTypeWithQualityHeaderValue("application/json"));
+            client.BaseAddress = new Uri($"https://ecast.jackboxgames.com/api/v2/rooms/{code}");
+            HttpResponseMessage response = client.GetAsync("").Result;
+            if (!response.IsSuccessStatusCode)
+            {
+                return false;
             }
 
             return true;
