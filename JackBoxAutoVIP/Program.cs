@@ -24,7 +24,7 @@ namespace JackBoxAutoVIP // Note: actual namespace depends on the project name.
             GameMemoryPointers.Add("The Jackbox Party Pack", new Int64[]{0x00E15620, 0x0, 0x88, 0x8, 0x10});
             
             // Start the TCP server on a different thread.
-            var server = new TcpServer(6969);
+            var server = new TcpServer(38469);
             var task = new Task(server.Listen);
             task.Start();
             
