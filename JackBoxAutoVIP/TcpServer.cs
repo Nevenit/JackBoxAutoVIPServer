@@ -8,12 +8,15 @@ namespace JackBoxAutoVIP;
 public class TcpServer
 {
     private readonly TcpListener _server;
+    private List<TcpConnectedClient> _clients;
     private bool _isRunning;
-    public string roomCode = "";
+    private string _roomCode;
 
     public TcpServer(int port)
     {
         _server = new TcpListener(IPAddress.Any, port);
+        _clients = new List<TcpConnectedClient>();
+        _roomCode = "";
         _server.Start();
         _isRunning = true;
     }
@@ -23,37 +26,45 @@ public class TcpServer
         while (_isRunning)
         {
             var client = await _server.AcceptTcpClientAsync();
-            _ = HandleClient(client);
+            ConnectClient(client);
         }
     }
 
-    public async Task HandleClient(TcpClient client)
+    public void ConnectClient(TcpClient client)
     {
-        var buffer = new byte[4096];
-        while (_isRunning)
-        {
-            Console.WriteLine($"device connected: {client.Client.RemoteEndPoint}");
-            var stream = client.GetStream();
-            var bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
-            
-            if (bytesRead == 0)
-            {
-                break; // Connection closed by client.
-            }
-            
-            // Parse client message
-            var clientMessage = Encoding.UTF8.GetString(buffer, 0, bytesRead).Trim();
-            Console.WriteLine($"Received message: {clientMessage}");
+        Console.WriteLine($"device connected: {client.Client.RemoteEndPoint}");
+        var tcpConnectedClient = new TcpConnectedClient(client);
+        _clients.Add(tcpConnectedClient);
+        
+        // Send the current roomCode to new client
+        tcpConnectedClient.SendRoomCode(_roomCode);
+    }
 
-            byte[] byteData;
-            if (clientMessage == "GetRoomCode")
+    // Send the current roomCode to all connected clients
+    public void SetRoomCode(string roomCode)
+    {
+        if (roomCode != _roomCode)
+        {
+            _roomCode = roomCode;
+            
+            // Create a copy of clients so we can remove old collections from to main list
+            var clients = _clients.ToArray();
+            
+            foreach (var client in clients)
             {
-                Console.WriteLine(clientMessage);
-                byteData = Encoding.UTF8.GetBytes("RoomCode:" + roomCode);
-                // Send back the room code
-                await stream.WriteAsync(byteData, 0, byteData.Length);
+                if (client.IsConnected())
+                {
+                    client.SendRoomCode(roomCode);
+                }
+                else
+                {
+                    // Remove client from the list and let the c# garbage collector clean up after it because im too lazy
+                    _clients.Remove(client);
+                }
+                
             }
         }
-        client.Close();
+        
     }
+    
 }

@@ -28,6 +28,8 @@ namespace JackBoxAutoVIP // Note: actual namespace depends on the project name.
             var task = new Task(server.Listen);
             task.Start();
             
+            string roomCode = "";
+            
             // Loop forever checking all processes running on the system. 
             // If one of one of the process running is a JackBox game we support then start reading the memory for the room code until that game closes.
             while (true)
@@ -55,12 +57,16 @@ namespace JackBoxAutoVIP // Note: actual namespace depends on the project name.
                         // While the process is running, read the memory.
                         while (!process.HasExited)
                         {
-                            String roomCode = ReadStringFromPointer(process, GameMemoryPointers[gameTitle]);
-                            if (IsCodeValid(roomCode))
+                            String roomCodeInMemory = ReadStringFromPointer(process, GameMemoryPointers[gameTitle]);
+                            if (roomCodeInMemory != roomCode)
                             {
-                                server.roomCode = roomCode;
+                                roomCode = roomCodeInMemory;
+                                if (IsCodeValid(roomCode))
+                                {
+                                    server.SetRoomCode(roomCode);
+                                }
                             }
-                            System.Threading.Thread.Sleep(1000);
+                            System.Threading.Thread.Sleep(10);
                         }
                     }
                 }
