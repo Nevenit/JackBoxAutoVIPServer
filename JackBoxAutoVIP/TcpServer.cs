@@ -46,10 +46,10 @@ public class TcpServer
             Console.WriteLine($"Received message: {clientMessage}");
 
             byte[] byteData;
-            if (clientMessage == "{\"action\": \"getRoomCode\"}")
+            if (clientMessage == "GetRoomCode")
             {
                 Console.WriteLine(clientMessage);
-                byteData = Encoding.UTF8.GetBytes(roomCode);
+                byteData = Encoding.UTF8.GetBytes("RoomCode:" + roomCode);
                 // Send back the room code
                 await stream.WriteAsync(byteData, 0, byteData.Length);
             }
