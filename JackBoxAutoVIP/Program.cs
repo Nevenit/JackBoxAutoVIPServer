@@ -22,6 +22,8 @@ namespace JackBoxAutoVIP // Note: actual namespace depends on the project name.
             // Dictionary of game titles and their memory pointers.
             Dictionary<string, Int64[]> GameMemoryPointers = new Dictionary<string, Int64[]>();
             GameMemoryPointers.Add("The Jackbox Party Pack", new Int64[]{0x00E15620, 0x0, 0x88, 0x8, 0x10});
+            GameMemoryPointers.Add("The Jackbox Party Pack 3", new Int64[]{0x00E15600, 0x0, 0x88, 0x8, 0x10});
+            GameMemoryPointers.Add("The Jackbox Party Pack 5", new Int64[]{0x00E14600, 0x0, 0x88, 0x8, 0x10});
             
             // Start the TCP server on a different thread.
             var server = new TcpServer(38469);
@@ -46,28 +48,39 @@ namespace JackBoxAutoVIP // Note: actual namespace depends on the project name.
                 // Loop through all the games we have memory pointers for.
                 foreach (var gameTitle in GameMemoryPointers.Keys)
                 {
-                    // If the game is running, get the process.
-                    if (processesNames.Contains(gameTitle))
+                    // If the game is not running continue to the next process.
+                    if (!processesNames.Contains(gameTitle))
+                        continue;
+                    
+                    // Print the name of the game that is running
+                    Console.WriteLine($"Game {gameTitle} is running.");
+                    
+                    Process process = Process.GetProcessesByName(gameTitle)[0];
+                    
+                    // While the process is running, read the memory.
+                    while (!process.HasExited)
                     {
-                        // Print the name of the game that is running
-                        Console.WriteLine($"Game {gameTitle} is running.");
+                        String roomCodeInMemory = ReadStringFromPointer(process, GameMemoryPointers[gameTitle]);
                         
-                        Process process = Process.GetProcessesByName(gameTitle)[0];
-                        
-                        // While the process is running, read the memory.
-                        while (!process.HasExited)
+                        // Check if room code changed
+                        if (roomCodeInMemory == roomCode)
                         {
-                            String roomCodeInMemory = ReadStringFromPointer(process, GameMemoryPointers[gameTitle]);
-                            if (roomCodeInMemory != roomCode)
-                            {
-                                roomCode = roomCodeInMemory;
-                                if (IsCodeValid(roomCode))
-                                {
-                                    server.SetRoomCode(roomCode);
-                                }
-                            }
-                            System.Threading.Thread.Sleep(10);
+                            Thread.Sleep(10);
+                            continue;
                         }
+                        
+                        if (!IsCodeValid(roomCode))
+                        {
+                            Thread.Sleep(10);
+                            continue;
+                        }
+
+                        
+                        roomCode = roomCodeInMemory;
+                        
+                        
+                        server.SetRoomCode(roomCode);
+                        
                     }
                 }
             }
