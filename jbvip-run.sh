@@ -13,10 +13,19 @@
 set -euo pipefail
 
 PORT="${JBVIP_PROXY_PORT:-8080}"
-STATE="/tmp/jbvip"
+REPO="$(dirname "$(readlink -f "$0")")"
+export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
+
+# Private, per-run state dir: mktemp -d => 0700, owned by us, unpredictable path,
+# so the trust bundle and mitm.log cannot be pre-created as attacker symlinks.
+umask 077
+STATE="$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/jbvip.XXXXXX")"
 CA="$HOME/.mitmproxy/mitmproxy-ca-cert.pem"
 BUNDLE="$STATE/cabundle.pem"
-mkdir -p "$STATE"
+
+# Clean up the private state dir on any exit, including the early port-in-use
+# exit below (before mitmdump is forked).
+trap 'rm -rf "$STATE"' EXIT INT TERM
 
 # The CA file the game's statically-linked libcurl reads (it ignores SSL_CERT_FILE).
 SYS_CA=""
@@ -33,19 +42,36 @@ if port_up; then
   exit 1
 fi
 
-mitmdump --listen-port "$PORT" -s "$(dirname "$(readlink -f "$0")")/extractor/addon.py" \
+mitmdump --listen-port "$PORT" -s "$REPO/extractor/addon.py" \
   >"$STATE/mitm.log" 2>&1 &
 MITM=$!
-STARTED=1
-for _ in $(seq 1 60); do { [ -f "$CA" ] && port_up; } && break; sleep 0.1; done
-trap '[ "$STARTED" = 1 ] && kill "$MITM" 2>/dev/null || true' EXIT
+# Reap mitmdump and clean the private state dir on any exit/signal during or
+# after the wait window, so the proxy is never orphaned holding the port.
+trap 'kill "$MITM" 2>/dev/null; rm -rf "$STATE"' EXIT INT TERM
 
-export PYTHONPATH="$(dirname "$(readlink -f "$0")")${PYTHONPATH:+:$PYTHONPATH}"
+ready=0
+for _ in $(seq 1 60); do
+  # mitmdump died during startup -> show the traceback and stop.
+  if ! kill -0 "$MITM" 2>/dev/null; then
+    echo "jbvip: mitmdump exited during startup; see $STATE/mitm.log" >&2
+    tail -n 20 "$STATE/mitm.log" >&2
+    exit 1
+  fi
+  if [ -f "$CA" ] && port_up; then ready=1; break; fi
+  sleep 0.1
+done
 
-[ -f "$CA" ] || { echo "jbvip: mitmproxy CA not found at $CA (run mitmdump once)" >&2; exit 1; }
+if [ "$ready" != 1 ]; then
+  echo "jbvip: proxy did not come up on 127.0.0.1:$PORT within 6s; see $STATE/mitm.log" >&2
+  tail -n 20 "$STATE/mitm.log" >&2
+  exit 1
+fi
 
 # 2. Build the per-game trust bundle: system CAs + mitmproxy CA.
-cat "$SYS_CA" "$CA" > "$BUNDLE"
+#    Write to a fresh temp file in the private STATE dir and rename into place.
+tmpbundle="$(mktemp "$STATE/cabundle.XXXXXX")"
+cat "$SYS_CA" "$CA" > "$tmpbundle"
+mv -f "$tmpbundle" "$BUNDLE"
 
 # 3. Launch the game in a private mount namespace:
 #    - bind our bundle over the CA path the game reads (scoped to the game only)
