@@ -1,3 +1,7 @@
+> **SUPERSEDED (2026-06-03):** replaced by
+> `docs/superpowers/specs/2026-06-03-jackbox-roomcode-extractor-design.md` and
+> `docs/superpowers/plans/2026-06-03-jackbox-roomcode-extractor.md`. Kept for history.
+
 # Jackbox Room-Code Extraction — Redesign Spec
 
 **Date:** 2026-06-03
