@@ -5,16 +5,33 @@ Run via:  mitmdump --listen-port <port> -s extractor/addon.py
 """
 import asyncio
 import json
+import logging
+
+from mitmproxy import ctx
 
 from extractor.roomcode import code_from_create_response, extract_code_from_url
 from extractor.server import RoomCodeServer
 
 _JACKBOX = "jackboxgames.com"
 
+logger = logging.getLogger(__name__)
+
 
 class RoomCodeExtractor:
     def __init__(self, server: RoomCodeServer):
         self.server = server
+        self._tasks: set[asyncio.Task] = set()
+
+    def _spawn(self, coro) -> None:
+        task = asyncio.ensure_future(coro)
+        self._tasks.add(task)
+
+        def _done(t: asyncio.Task) -> None:
+            self._tasks.discard(t)
+            if not t.cancelled() and t.exception() is not None:
+                logger.error("background task failed", exc_info=t.exception())
+
+        task.add_done_callback(_done)
 
     # --- pure-ish extraction (host-filtered), unit tested ---
     def _is_jackbox(self, flow) -> bool:
@@ -39,11 +56,19 @@ class RoomCodeExtractor:
 
     def _broadcast(self, code: str | None) -> None:
         if code:
-            asyncio.ensure_future(self.server.set_code(code))
+            self._spawn(self.server.set_code(code))
 
     # --- mitmproxy event hooks ---
-    def running(self):
-        asyncio.ensure_future(self.server.start())
+    async def running(self):
+        try:
+            await self.server.start()
+        except OSError as e:
+            logger.error(
+                "RoomCodeServer could not bind %s:%d (%s); shutting down.",
+                self.server._host, self.server._port, e,
+            )
+            ctx.master.shutdown()
+            raise
 
     def response(self, flow):
         self._broadcast(self.code_from_response_flow(flow))

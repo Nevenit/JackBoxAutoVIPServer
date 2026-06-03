@@ -42,8 +42,10 @@ class RoomCodeServer:
         if code == self._code:
             return
         self._code = code
-        for writer in list(self._writers):
-            await self._safe_send(writer, code)
+        await asyncio.gather(
+            *(self._safe_send(w, code) for w in list(self._writers)),
+            return_exceptions=True,
+        )
 
     async def _safe_send(self, writer: asyncio.StreamWriter, code: str) -> None:
         try:

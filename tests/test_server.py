@@ -50,3 +50,32 @@ async def test_disconnected_client_is_pruned():
     await asyncio.sleep(0.05)
     await server.set_code("ZZZZ")  # must not raise on the dead writer
     assert server.client_count == 0
+
+
+async def test_broadcast_reaches_all_connected_clients():
+    server = RoomCodeServer(port=0)
+    await server.start()
+    r1, w1 = await _connect(server)
+    r2, w2 = await _connect(server)
+    await asyncio.sleep(0.05)
+    assert server.client_count == 2
+    await server.set_code("AAAA")
+    assert await asyncio.wait_for(r1.read(100), timeout=1) == b"RoomCode:AAAA"
+    assert await asyncio.wait_for(r2.read(100), timeout=1) == b"RoomCode:AAAA"
+    w1.close()
+    w2.close()
+
+
+async def test_late_client_gets_current_code_without_resending_to_existing():
+    server = RoomCodeServer(port=0)
+    await server.start()
+    r1, w1 = await _connect(server)
+    await asyncio.sleep(0.05)
+    await server.set_code("AAAA")
+    assert await asyncio.wait_for(r1.read(100), timeout=1) == b"RoomCode:AAAA"
+    r2, w2 = await _connect(server)
+    assert await asyncio.wait_for(r2.read(100), timeout=1) == b"RoomCode:AAAA"
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(r1.read(100), timeout=0.2)  # no duplicate to first client
+    w1.close()
+    w2.close()

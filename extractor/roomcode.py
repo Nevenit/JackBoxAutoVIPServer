@@ -7,19 +7,38 @@ Two pure entry points, no I/O:
 """
 import re
 
-# room-id segment, e.g. /api/v2/rooms/ABCD/play  or  /api/v2/rooms/ABCD
-_ROOM_PATH = re.compile(r"/api/v\d+/rooms/([A-Za-z0-9]+)(?:[/?]|$)")
-# the create endpoint itself: /api/v2/rooms  (no code segment)
-_CREATE_PATH = re.compile(r"/api/v\d+/rooms/?(?:\?|$)")
+# room-id segment, e.g. /rooms/ABCD/play  or  /api/v2/rooms/ABCD.
+# Anchored on the '/rooms/' segment (leading slash or string start) so it is
+# resilient to version/prefix routing changes, while the leading boundary still
+# rejects 'classrooms'/'audiencerooms'.
+_ROOM_PATH = re.compile(r"(?:^|/)rooms/([A-Za-z0-9]+)(?:[/?#]|$)")
+# the create endpoint itself: /rooms  (no code segment)
+_CREATE_PATH = re.compile(r"(?:^|/)rooms/?(?:[?#]|$)")
 
 
 def looks_like_code(code: str) -> bool:
-    """Sanity check: short and alphanumeric. NOT hardcoded to 4/uppercase."""
-    return isinstance(code, str) and 2 <= len(code) <= 8 and code.isalnum()
+    """Sanity check: short and ASCII-alphanumeric. NOT hardcoded to 4/uppercase.
+
+    str.isalnum() is Unicode-aware, so the extra isascii() guard rejects
+    fullwidth Latin, accented letters, Roman numerals, and non-Latin digits
+    that would otherwise be broadcast as a confidently-wrong room code.
+    """
+    return (
+        isinstance(code, str)
+        and 2 <= len(code) <= 8
+        and code.isascii()
+        and code.isalnum()
+    )
 
 
 def code_from_create_response(url: str, body) -> str | None:
-    """Return the room code from a POST /api/v2/rooms JSON response body."""
+    """Return the room code from a POST /rooms JSON response body.
+
+    Precondition: the caller MUST have already confirmed this is the *create*
+    POST. A GET/listing/poll on the same path can also carry body.code, so the
+    HTTP method cannot be inferred from the body shape here. The mitmproxy addon
+    guards method == "POST" before calling this function.
+    """
     if not url or not _CREATE_PATH.search(url):
         return None
     if not isinstance(body, dict):
