@@ -4,10 +4,14 @@ from pathlib import Path
 from extractor.roomcode import (
     extract_code_from_url,
     code_from_create_response,
+    code_from_blobcast_request,
+    code_from_blobcast_socketio,
     looks_like_code,
 )
 
 FIXTURE = Path(__file__).parent / "fixtures" / "create_room_response.json"
+BLOBCAST_FIXTURE = Path(__file__).parent / "fixtures" / "blobcast_accesstoken_request.json"
+SOCKETIO_FIXTURE = Path(__file__).parent / "fixtures" / "blobcast_socketio_createroom.txt"
 
 
 # --- primary: REST create-room response body ---
@@ -87,6 +91,52 @@ def test_url_rejects_classrooms_and_audiencerooms():
     # the leading-boundary anchor must not match these as '/rooms/...'
     assert extract_code_from_url("https://ecast.jackboxgames.com/classrooms/ABCD") is None
     assert extract_code_from_url("https://ecast.jackboxgames.com/audiencerooms/WXYZ") is None
+
+
+# --- legacy Blobcast: POST /accessToken request body carries roomId ---
+
+def test_code_from_real_blobcast_accesstoken_fixture():
+    body = json.loads(BLOBCAST_FIXTURE.read_text())
+    url = "https://blobcast.jackboxgames.com/accessToken"
+    assert code_from_blobcast_request(url, body) == "PFTC"
+
+
+def test_blobcast_ignores_non_accesstoken_url():
+    # the /room call has no roomId; only /accessToken carries it
+    assert code_from_blobcast_request(
+        "https://blobcast.jackboxgames.com/room", {"roomId": "PFTC"}
+    ) is None
+
+
+def test_blobcast_handles_missing_or_bad_roomid():
+    url = "https://blobcast.jackboxgames.com/accessToken"
+    assert code_from_blobcast_request(url, {"appId": "x"}) is None
+    assert code_from_blobcast_request(url, None) is None
+    assert code_from_blobcast_request(url, {"roomId": 1234}) is None        # non-string
+    assert code_from_blobcast_request(url, {"roomId": "TOOLONG12"}) is None  # fails sanity check
+
+
+# --- legacy Blobcast websocket: socket.io CreateRoom result frame carries roomId ---
+
+def test_code_from_real_blobcast_socketio_fixture():
+    msg = SOCKETIO_FIXTURE.read_text().strip()
+    assert code_from_blobcast_socketio(msg) == "WEWW"
+
+
+def test_blobcast_socketio_ignores_non_event_frames():
+    assert code_from_blobcast_socketio("1::") is None    # socket.io connect
+    assert code_from_blobcast_socketio("2::") is None    # heartbeat
+    assert code_from_blobcast_socketio("") is None
+    assert code_from_blobcast_socketio(None) is None
+
+
+def test_blobcast_socketio_ignores_event_without_roomid():
+    # the client's CreateRoom *request* has no roomId yet
+    assert code_from_blobcast_socketio('5:::{"args":{"action":"CreateRoom","appId":"x"}}') is None
+
+
+def test_blobcast_socketio_tolerates_bad_json():
+    assert code_from_blobcast_socketio("5:::not json") is None
 
 
 # --- sanity check ---
