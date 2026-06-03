@@ -1,0 +1,23 @@
+"UserLocalConfigStore"
+{
+	"Software"
+	{
+		"Valve"
+		{
+			"Steam"
+			{
+				"apps"
+				{
+					"1148350"
+					{
+						"LastPlayed"		"1700000000"
+					}
+					"331670"
+					{
+						"LaunchOptions"		"existing %command%"
+					}
+				}
+			}
+		}
+	}
+}
