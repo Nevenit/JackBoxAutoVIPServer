@@ -11,24 +11,32 @@ seat for you. (The auto-join VIP bot itself is future work — see below.)
 ## What It Does
 
 When you launch a Jackbox game, the server intercepts the game's own backend
-(ecast) traffic, reads the room code straight out of the `POST /api/v2/rooms`
-response, and broadcasts it to every connected client as the ASCII bytes
-`RoomCode:<CODE>` (no terminator) on TCP port **38469**. New clients receive the
-current code the moment they connect; whenever the code changes (a new room) the
-new code is broadcast. The server binds `0.0.0.0`, so a client elsewhere on the
-LAN can connect.
+traffic, reads the room code straight out of it, and broadcasts it to every
+connected client as the ASCII bytes `RoomCode:<CODE>` (no terminator) on TCP port
+**38469**. New clients receive the current code the moment they connect; whenever
+the code changes (a new room) the new code is broadcast. The server binds
+`0.0.0.0`, so a client elsewhere on the LAN can connect.
 
-Because it reads the code from the game's own network traffic, it works
-uniformly across every Jackbox game and survives game updates — there is nothing
-per-game or per-version to maintain.
+It understands all three room-code protocols Jackbox packs use, so it works
+across both current and older packs:
+
+- **ecast** (newer packs) — the code is in the `POST /api/v2/rooms` response body.
+- **Blobcast over REST** (some older packs) — the code is the `roomId` in the
+  host's `POST /accessToken` request.
+- **Blobcast over socket.io** (oldest packs) — the code arrives in the
+  `CreateRoom` websocket frame.
+
+Because it reads the code from the game's own network traffic, it survives game
+updates — there is nothing per-game or per-version to maintain.
 
 ## Requirements
 
 - Linux
 - Steam, with at least one Jackbox game installed
-- [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`) with
-  unprivileged user namespaces enabled
+- [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`)
 - [mitmproxy](https://mitmproxy.org/) on your `PATH` — `pipx install mitmproxy`
+- `iptables` and a cgroup v1 `net_cls` hierarchy — used to redirect **only the
+  game's** traffic to the proxy. Setting this up is one `sudo` command per session.
 
 ## Setup
 
@@ -51,7 +59,18 @@ per-game or per-version to maintain.
    This finds every installed Jackbox game and sets its Steam launch option to
    `<repo>/jbvip-run.sh %command%`.
 
-3. Start Steam and launch any Jackbox game normally. The room code is now served
+3. **Once per session** (e.g. after a reboot), activate the game-scoped traffic
+   redirect. It needs `sudo` and stays active until you remove it or reboot:
+
+   ```bash
+   sudo ./jbvip-redirect-up.sh
+   ```
+
+   This redirects only the Jackbox game's `:443` and `:38203` to the proxy —
+   nothing else on the machine is touched. Remove it any time with
+   `sudo ./jbvip-redirect-down.sh`.
+
+4. Start Steam and launch any Jackbox game normally. The room code is now served
    on TCP `:38469`. Test it with:
 
    ```bash
@@ -64,16 +83,25 @@ per-game or per-version to maintain.
 
 Each Jackbox game is launched through `jbvip-run.sh`, which:
 
-- starts `mitmproxy` (loading `extractor/addon.py`) only while the game runs;
-- builds a CA bundle of your system CAs plus the mitmproxy CA, and injects it
-  into the game's **own mount namespace only** via
+- starts `mitmproxy` in transparent mode (loading `extractor/addon.py`) only
+  while the game runs;
+- builds a CA bundle of your system CAs plus the mitmproxy CA and injects it into
+  the game's **own mount namespace only** via
   `bwrap --bind <bundle> /etc/ssl/certs/ca-certificates.crt`;
-- routes the game's HTTPS through the proxy with the `HTTPS_PROXY` env var.
+- puts the game in a `net_cls` cgroup whose `:443`/`:38203` traffic the kernel
+  redirect (`jbvip-redirect-up.sh`) sends to the proxy.
 
-No system-wide trust changes, no root, and nothing persists: the injected CA is
-visible only to that one game process and vanishes when the game exits. The
-addon watches the game's ecast traffic, extracts the room code, and hands it to
-the asyncio TCP server that speaks the `RoomCode:<CODE>` protocol.
+The game process is never modified or injected into — the redirect happens in the
+kernel, scoped to the game's cgroup — so even fragile older (Adobe AIR) packs run
+normally. The mitmproxy CA is trusted **only** inside that one game's mount
+namespace and vanishes when the game exits; the rest of the system never trusts
+it. The addon watches the game's traffic, extracts the room code (ecast or
+Blobcast), and hands it to the asyncio TCP server that speaks `RoomCode:<CODE>`.
+
+A transparent redirect (rather than the `HTTPS_PROXY` env var the project first
+used) is required because the oldest packs open their room-code websocket as a
+raw TLS socket that ignores proxy settings — only a kernel-level redirect catches
+it, and unlike injecting a library into the game it doesn't crash the AIR runtime.
 
 ## Uninstall
 

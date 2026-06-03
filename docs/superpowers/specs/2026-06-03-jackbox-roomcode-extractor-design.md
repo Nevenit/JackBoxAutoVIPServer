@@ -174,5 +174,28 @@ change. Preserves any existing/future client and the auto-join bot to come.
 ## 10. Future work (out of scope here)
 
 - Auto-join VIP bot consuming the extracted code.
-- Legacy Blobcast protocol support.
 - Packaging (e.g. a distro package or one-shot installer bundling mitmproxy).
+
+## 11. Update (2026-06-04): multi-pack support + transparent redirect
+
+Implemented beyond the original ecast-only design after testing real packs:
+
+- **Three room-code protocols** are now parsed (`extractor/roomcode.py` +
+  `extractor/addon.py`): ecast `POST /api/v2/rooms` body; legacy **Blobcast** over
+  REST (`POST /accessToken` request `roomId`); and legacy Blobcast over
+  **socket.io** (the `CreateRoom` websocket frame's `roomId`).
+- **Interception switched from the explicit `HTTPS_PROXY` env var to a
+  game-scoped transparent redirect.** The oldest packs (e.g. Party Pack 1) open
+  their socket.io room-code connection as a raw TLS socket that ignores
+  `HTTPS_PROXY`, and forcing it through a proxy via `LD_PRELOAD` segfaults the
+  Adobe AIR runtime. Instead, `jbvip-redirect-up.sh` (one `sudo` per session) adds
+  an `iptables nat/OUTPUT REDIRECT` matching a cgroup-v1 `net_cls` classid, so only
+  the game's `:443`/`:38203` is redirected to mitmproxy in transparent mode.
+  Nothing is injected into the game process. `jbvip-run.sh` joins the cgroup and
+  launches the game.
+- **Host filtering uses `request.pretty_host`** (not `request.host`) so it
+  resolves the hostname in transparent mode, where `request.host` is the
+  original-destination IP.
+
+Trade-off vs the original "no root" goal: the transparent redirect needs a
+one-time `sudo` per session, but it covers every pack and never touches the game.
