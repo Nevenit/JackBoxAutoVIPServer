@@ -1,0 +1,32 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>jbvip injection fixture</title></head>
+<body>
+  <div id="app">
+    <form v-if="!joined" @submit.prevent="join">
+      <p class="warnings" v-if="error">{{ error }}</p>
+      <label for="roomcode">Room Code</label>
+      <input id="roomcode" v-model="code" maxlength="8" autocomplete="off">
+      <label for="username">Name</label>
+      <input id="username" v-model="name" maxlength="12" autocomplete="off">
+      <button id="button-join" :disabled="!ready" type="submit">Play</button>
+    </form>
+    <p v-else id="joined">joined as {{ name }} in {{ code }}</p>
+  </div>
+  <script src="./node_modules/vue/dist/vue.global.prod.js"></script>
+  <script>
+    Vue.createApp({
+      data() { return { code: '', name: '', joined: false, error: '' }; },
+      computed: {
+        ready() { return this.code.length === 4 && this.name.length > 0; }
+      },
+      methods: {
+        join() {
+          if (this.code === 'FAIL') { this.error = 'Room not found.'; return; }
+          this.joined = true;
+        }
+      }
+    }).mount('#app');
+  </script>
+</body>
+</html>

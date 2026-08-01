@@ -39,3 +39,6 @@
 .venv/
 __pycache__/
 *.pyc
+
+# Node
+injection/node_modules/
