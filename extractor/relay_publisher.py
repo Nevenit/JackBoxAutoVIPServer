@@ -70,6 +70,15 @@ class RelayPublisher:
         return None
 
     async def set_code(self, code: str) -> None:
+        """Publish best-effort. Never raises: a dead relay must not disturb a game."""
+        try:
+            await self._publish(code)
+        except Exception:
+            # Backstop so nothing from this sink can escape into mitmproxy.
+            # Deliberately does not log the code itself.
+            logger.exception("relay publish failed unexpectedly")
+
+    async def _publish(self, code: str) -> None:
         payload = {"code": code, "ts": self._now()}
         delay = self._backoff
         for attempt in range(1, self._attempts + 1):

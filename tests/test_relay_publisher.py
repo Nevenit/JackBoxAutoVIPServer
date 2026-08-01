@@ -1,5 +1,9 @@
+import json
+import urllib.error
+
 import pytest
 
+from extractor import relay_publisher
 from extractor.relay_publisher import RelayPublisher
 
 
@@ -88,3 +92,60 @@ async def test_the_room_code_is_never_logged(caplog):
     with caplog.at_level("DEBUG"):
         await make(post).set_code("SECRET1")
     assert "SECRET1" not in caplog.text
+
+
+async def test_set_code_never_raises_when_the_clock_fails():
+    def broken_clock():
+        raise RuntimeError("clock unavailable")
+
+    publisher = RelayPublisher(
+        "https://relay.example/",
+        "pub-token",
+        post=RecordingPost(),
+        sleep=no_sleep,
+        now=broken_clock,
+    )
+    await publisher.set_code("WEWW")  # must not raise
+
+
+def test_urllib_post_builds_the_expected_request(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return False
+
+    def fake_urlopen(request, timeout=None):
+        captured["request"] = request
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr(relay_publisher.urllib.request, "urlopen", fake_urlopen)
+    relay_publisher._urllib_post(
+        "https://relay.example/publish", "pub-token", {"code": "WEWW", "ts": 1000.0}
+    )
+
+    request = captured["request"]
+    assert request.full_url == "https://relay.example/publish"
+    assert request.get_method() == "POST"
+    assert request.get_header("Authorization") == "Bearer pub-token"
+    assert json.loads(request.data) == {"code": "WEWW", "ts": 1000.0}
+    assert captured["timeout"] == relay_publisher.REQUEST_TIMEOUT_SECONDS
+
+
+async def test_a_real_urllib_error_is_caught_by_set_code(monkeypatch):
+    def exploding_urlopen(request, timeout=None):
+        raise urllib.error.URLError("name resolution failed")
+
+    monkeypatch.setattr(relay_publisher.urllib.request, "urlopen", exploding_urlopen)
+    publisher = RelayPublisher(
+        "https://relay.example/",
+        "pub-token",
+        sleep=no_sleep,
+        now=lambda: 1000.0,
+        attempts=2,
+    )
+    await publisher.set_code("WEWW")  # must not raise
