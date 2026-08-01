@@ -100,6 +100,7 @@ class RelayState:
 
     # --- pairing ---
     def mint_pairing_code(self) -> str:
+        self._expire_pairing_codes()
         code = "".join(
             secrets.choice(PAIRING_ALPHABET) for _ in range(PAIRING_CODE_LENGTH)
         )

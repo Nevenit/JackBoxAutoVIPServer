@@ -210,10 +210,22 @@ async def test_pairing_attempts_are_rate_limited(tmp_path):
 
 
 async def test_minting_pairing_codes_is_rate_limited(tmp_path):
-    _, app = make(tmp_path, pair_limiter=RateLimiter(limit=1, window_seconds=60.0))
+    _, app = make(tmp_path, mint_limiter=RateLimiter(limit=1, window_seconds=60.0))
     headers = {"Authorization": "Bearer pub"}
     async with serving(app) as http:
         first = await http.post("/pairing-codes", headers=headers)
         second = await http.post("/pairing-codes", headers=headers)
     assert first.status_code == 200
     assert second.status_code == 429
+
+
+async def test_anonymous_pair_spam_cannot_lock_out_minting(tmp_path):
+    _, app = make(tmp_path, pair_limiter=RateLimiter(limit=1, window_seconds=60.0))
+    async with serving(app) as http:
+        await http.post("/pair", json={"pairing_code": "ZZZZZZ"})
+        exhausted = await http.post("/pair", json={"pairing_code": "ZZZZZZ"})
+        minted = await http.post(
+            "/pairing-codes", headers={"Authorization": "Bearer pub"}
+        )
+    assert exhausted.status_code == 429
+    assert minted.status_code == 200

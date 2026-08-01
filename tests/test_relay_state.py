@@ -4,6 +4,7 @@ from relay.state import (
     FRESH_SECONDS,
     PAIRING_ALPHABET,
     PAIRING_CODE_LENGTH,
+    PAIRING_TTL_SECONDS,
     RateLimiter,
     RelayState,
 )
@@ -104,6 +105,17 @@ def test_an_expired_pairing_code_is_refused():
     code = state.mint_pairing_code()
     clock.t = 1000.0 + 301
     assert state.redeem_pairing_code(code) is None
+
+
+def test_minting_sweeps_expired_pairing_codes():
+    # Memory-bound property with no public surface, so this asserts on the
+    # private dict deliberately: unredeemed codes must not accumulate.
+    clock = Clock(1000.0)
+    state = RelayState("pub", now=clock)
+    state.mint_pairing_code()
+    clock.t = 1000.0 + PAIRING_TTL_SECONDS + 1
+    state.mint_pairing_code()
+    assert len(state._pairing_codes) == 1
 
 
 def test_an_unknown_pairing_code_is_refused():

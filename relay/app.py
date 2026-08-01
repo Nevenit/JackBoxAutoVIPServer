@@ -33,6 +33,7 @@ class Relay:
         *,
         publish_limiter=None,
         pair_limiter=None,
+        mint_limiter=None,
     ):
         self.state = state
         self.tokens_path = tokens_path
@@ -41,6 +42,9 @@ class Relay:
             limit=60, window_seconds=60.0
         )
         self._pair_limiter = pair_limiter or RateLimiter(
+            limit=10, window_seconds=60.0
+        )
+        self._mint_limiter = mint_limiter or RateLimiter(
             limit=10, window_seconds=60.0
         )
 
@@ -84,7 +88,7 @@ class Relay:
                         payload = await asyncio.wait_for(
                             queue.get(), KEEPALIVE_SECONDS
                         )
-                    except TimeoutError:
+                    except asyncio.TimeoutError:
                         yield b": keepalive\n\n"
                         continue
                     yield f"data: {json.dumps(payload)}\n\n".encode()
@@ -100,7 +104,7 @@ class Relay:
     async def mint_pairing_code(self, request):
         if not self.state.is_publisher(_bearer(request)):
             return JSONResponse({"error": "unauthorized"}, status_code=401)
-        if not self._pair_limiter.allow():
+        if not self._mint_limiter.allow():
             return JSONResponse({"error": "rate limited"}, status_code=429)
         return JSONResponse({"pairing_code": self.state.mint_pairing_code()})
 
@@ -121,13 +125,19 @@ class Relay:
 
 
 def build_app(
-    state: RelayState, tokens_path, *, publish_limiter=None, pair_limiter=None
+    state: RelayState,
+    tokens_path,
+    *,
+    publish_limiter=None,
+    pair_limiter=None,
+    mint_limiter=None,
 ) -> Starlette:
     relay = Relay(
         state,
         tokens_path,
         publish_limiter=publish_limiter,
         pair_limiter=pair_limiter,
+        mint_limiter=mint_limiter,
     )
     app = Starlette(
         routes=[
