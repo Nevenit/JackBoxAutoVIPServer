@@ -8,6 +8,10 @@ import asyncio
 
 
 class RoomCodeServer:
+    # A failure to bind is fatal: a silently unbound local server is exactly
+    # the bug the shutdown-on-bind-failure behaviour was added to prevent.
+    critical = True
+
     def __init__(self, port: int = 38469, host: str = "0.0.0.0"):
         self._port = port
         self._host = host

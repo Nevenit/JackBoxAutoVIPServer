@@ -2,8 +2,10 @@ import asyncio
 import json
 from types import SimpleNamespace
 
+import pytest
 from mitmproxy.test import tflow, tutils
 
+from extractor import addon as addon_module
 from extractor.addon import RoomCodeExtractor
 from extractor.server import RoomCodeServer
 
@@ -265,3 +267,83 @@ async def test_websocket_message_hook_drives_set_code_end_to_end():
     data = await asyncio.wait_for(reader.read(100), timeout=1)
     assert data == b"RoomCode:WEWW"
     writer.close()
+
+
+# --- sink fan-out ---
+
+
+class FakeSink:
+    critical = False
+
+    def __init__(self, fail_on_start=False, fail_on_set=False):
+        self.started = False
+        self.codes = []
+        self._fail_on_start = fail_on_start
+        self._fail_on_set = fail_on_set
+
+    async def start(self):
+        if self._fail_on_start:
+            raise OSError("cannot start")
+        self.started = True
+
+    async def set_code(self, code):
+        if self._fail_on_set:
+            raise RuntimeError("cannot accept")
+        self.codes.append(code)
+
+
+class FakeCriticalSink(FakeSink):
+    critical = True
+
+
+async def test_a_code_reaches_every_sink():
+    first, second = FakeSink(), FakeSink()
+    ext = RoomCodeExtractor(first, second)
+    ext._broadcast("WEWW")
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert first.codes == ["WEWW"]
+    assert second.codes == ["WEWW"]
+
+
+async def test_one_failing_sink_does_not_starve_the_others():
+    broken, healthy = FakeSink(fail_on_set=True), FakeSink()
+    ext = RoomCodeExtractor(broken, healthy)
+    ext._broadcast("WEWW")
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert healthy.codes == ["WEWW"]
+
+
+async def test_running_starts_every_sink():
+    first, second = FakeSink(), FakeSink()
+    await RoomCodeExtractor(first, second).running()
+    assert first.started and second.started
+
+
+async def test_a_non_critical_sink_failing_to_start_is_survivable():
+    broken, healthy = FakeSink(fail_on_start=True), FakeSink()
+    await RoomCodeExtractor(broken, healthy).running()
+    assert healthy.started
+
+
+async def test_a_critical_sink_failing_to_start_is_fatal(monkeypatch):
+    shutdowns = []
+
+    class FakeMaster:
+        def shutdown(self):
+            shutdowns.append(True)
+
+    monkeypatch.setattr(addon_module.ctx, "master", FakeMaster(), raising=False)
+    with pytest.raises(OSError):
+        await RoomCodeExtractor(FakeCriticalSink(fail_on_start=True)).running()
+    assert shutdowns == [True]
+
+
+def test_the_lan_server_is_a_critical_sink():
+    assert RoomCodeServer.critical is True
+
+
+def test_constructing_with_no_sinks_is_refused():
+    with pytest.raises(ValueError):
+        RoomCodeExtractor()

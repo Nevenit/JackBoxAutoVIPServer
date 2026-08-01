@@ -6,6 +6,7 @@ Run via:  mitmdump --listen-port <port> -s extractor/addon.py
 import asyncio
 import json
 import logging
+import os
 
 from mitmproxy import ctx
 
@@ -15,6 +16,7 @@ from extractor.roomcode import (
     code_from_blobcast_request,
     code_from_blobcast_socketio,
 )
+from extractor.relay_publisher import RelayPublisher
 from extractor.server import RoomCodeServer
 
 _JACKBOX = "jackboxgames.com"
@@ -23,8 +25,10 @@ logger = logging.getLogger(__name__)
 
 
 class RoomCodeExtractor:
-    def __init__(self, server: RoomCodeServer):
-        self.server = server
+    def __init__(self, *sinks):
+        if not sinks:
+            raise ValueError("RoomCodeExtractor requires at least one sink")
+        self.sinks = list(sinks)
         self._tasks: set[asyncio.Task] = set()
 
     def _spawn(self, coro) -> None:
@@ -91,20 +95,37 @@ class RoomCodeExtractor:
         return code_from_blobcast_socketio(text)
 
     def _broadcast(self, code: str | None) -> None:
-        if code:
-            self._spawn(self.server.set_code(code))
+        if not code:
+            return
+        for sink in self.sinks:
+            self._spawn(self._set_code_safely(sink, code))
+
+    async def _set_code_safely(self, sink, code: str) -> None:
+        try:
+            await sink.set_code(code)
+        except Exception:
+            # Deliberately does not log the code itself.
+            logger.exception("sink %s rejected the room code", type(sink).__name__)
 
     # --- mitmproxy event hooks ---
     async def running(self):
-        try:
-            await self.server.start()
-        except OSError as e:
-            logger.error(
-                "RoomCodeServer could not bind %s:%d (%s); shutting down.",
-                self.server._host, self.server._port, e,
-            )
-            ctx.master.shutdown()
-            raise
+        for sink in self.sinks:
+            try:
+                await sink.start()
+            except Exception as exc:
+                if getattr(sink, "critical", False):
+                    logger.error(
+                        "critical sink %s failed to start (%s); shutting down.",
+                        type(sink).__name__,
+                        exc,
+                    )
+                    ctx.master.shutdown()
+                    raise
+                logger.warning(
+                    "sink %s failed to start (%s); continuing without it.",
+                    type(sink).__name__,
+                    exc,
+                )
 
     def request(self, flow):
         # Blobcast carries the code in the request body (POST /accessToken).
@@ -121,4 +142,17 @@ class RoomCodeExtractor:
         self._broadcast(self.code_from_websocket_message(flow))
 
 
-addons = [RoomCodeExtractor(RoomCodeServer(port=38469))]
+def _build_sinks():
+    """The LAN server always; the relay publisher when it is configured."""
+    sinks = [RoomCodeServer(port=38469)]
+    base_url = os.environ.get("JBVIP_RELAY_URL", "")
+    token = os.environ.get("JBVIP_RELAY_TOKEN", "")
+    if base_url and token:
+        try:
+            sinks.append(RelayPublisher(base_url, token))
+        except ValueError as exc:
+            logger.error("relay publishing disabled: %s", exc)
+    return sinks
+
+
+addons = [RoomCodeExtractor(*_build_sinks())]
