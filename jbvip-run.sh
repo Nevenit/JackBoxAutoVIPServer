@@ -100,9 +100,17 @@ fi
 # prints websocket message contents and response bodies, which is where every
 # other protocol's room code lives (Blobcast's roomId frames, the ecast create
 # response). Pinned to 1, the URL is the only place a code can appear, and the
-# redaction in cleanup() covers it. ~/.mitmproxy/config.yaml cannot override a
-# command-line --set.
-mitmdump --mode transparent --listen-port "$PORT" --set flow_detail=1 \
+# redaction in cleanup() covers it.
+#
+# It MUST be --flow-detail and not `--set flow_detail=1`. mitmproxy applies --set
+# options *before* it loads ~/.mitmproxy/config.yaml, and the config load then
+# overwrites them, so a user with `flow_detail: 4` there silently wins and the
+# redaction stops being sufficient. --flow-detail is applied in process_options,
+# which runs after the config load, so it is the one that holds. (See
+# mitmproxy/tools/main.py: opts.set(..., defer=True) precedes load_paths(),
+# process_options() follows it.) This project guarantees ~/.mitmproxy exists,
+# because the CA lives there. Do not "simplify" this back to --set.
+mitmdump --mode transparent --listen-port "$PORT" --flow-detail 1 \
   -s "$REPO/extractor/addon.py" \
   >"$STATE/mitm.log" 2>&1 &
 MITM=$!

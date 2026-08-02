@@ -8,7 +8,11 @@ relay is configured through a file instead.
 These tests run the real config block out of the real script, so the file path
 and the export behaviour are pinned to what jbvip-run.sh actually does.
 """
+import shlex
+import shutil
 import subprocess
+import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -190,11 +194,69 @@ def test_the_shell_and_the_addon_agree_on_the_log_marker():
     assert f'LOG_MARKER="{LOG_MARKER}"' in LAUNCHER.read_text()
 
 
-def test_the_launcher_pins_mitmdump_flow_detail():
-    # At flow_detail >= 3 mitmdump prints websocket message contents and
-    # response bodies, which is where Blobcast's roomId and the ecast create
-    # response live — past the URL-only redaction.
-    assert "--set flow_detail=1" in LAUNCHER.read_text()
+def mitmdump_flow_detail_args() -> list[str]:
+    """The flow-detail arguments jbvip-run.sh actually passes to mitmdump."""
+    text = LAUNCHER.read_text().replace("\\\n", " ")
+    line = next(
+        one for one in text.splitlines() if one.strip().startswith("mitmdump ")
+    )
+    tokens = shlex.split(line.split(">", 1)[0])  # drop the output redirection
+    args: list[str] = []
+    for index, token in enumerate(tokens):
+        if token == "--flow-detail" or (
+            token == "--set" and tokens[index + 1].startswith("flow_detail=")
+        ):
+            args += [token, tokens[index + 1]]
+    assert args, "jbvip-run.sh no longer pins mitmdump's flow_detail"
+    return args
+
+
+def test_the_launcher_pins_flow_detail_against_a_user_config_file():
+    """The pin must survive a ~/.mitmproxy/config.yaml that sets flow_detail.
+
+    Asserting the flag *string* cannot catch this: `--set flow_detail=1` looks
+    right and is inert, because mitmproxy applies --set before loading
+    config.yaml and the config load overwrites it. So this runs the real
+    mitmdump with the launcher's own arguments against a config file asking for
+    4, and asserts what the dumper will actually do. At 4 it prints response
+    bodies and websocket contents — the ecast create response's `code` and
+    Blobcast's `roomId` — neither of which the /rooms/-anchored redaction touches.
+    """
+    mitmdump = Path(sys.executable).parent / "mitmdump"
+    if not mitmdump.exists():
+        found = shutil.which("mitmdump")
+        if found is None:  # pragma: no cover - mitmproxy is a hard requirement
+            pytest.skip("mitmdump is not installed")
+        mitmdump = Path(found)
+
+    with tempfile.TemporaryDirectory() as workspace:
+        work = Path(workspace)
+        confdir = work / "confdir"
+        confdir.mkdir()
+        (confdir / "config.yaml").write_text("flow_detail: 4\n")
+        probe = work / "probe.py"
+        probe.write_text(
+            "import logging\n"
+            "from mitmproxy import ctx\n"
+            "def running():\n"
+            "    logging.getLogger('probe').warning(\n"
+            "        'OBSERVED flow_detail=%s', ctx.options.flow_detail)\n"
+            "    ctx.master.shutdown()\n"
+        )
+        done = subprocess.run(
+            [
+                str(mitmdump),
+                "-p", "0",
+                "--set", f"confdir={confdir}",
+                *mitmdump_flow_detail_args(),
+                "-s", str(probe),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+    assert "OBSERVED flow_detail=1" in done.stdout, done.stdout + done.stderr
 
 
 @pytest.mark.parametrize("variable", ["JBVIP_RELAY_URL", "JBVIP_RELAY_TOKEN"])
