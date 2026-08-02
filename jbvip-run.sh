@@ -44,7 +44,27 @@ umask 077
 STATE="$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/jbvip.XXXXXX")"
 CA="$HOME/.mitmproxy/mitmproxy-ca-cert.pem"
 BUNDLE="$STATE/cabundle.pem"
-trap 'rm -rf "$STATE"' EXIT INT TERM
+# $STATE is deleted on every exit path, which used to take the proxy log with
+# it — and that log is the only place a relay misconfiguration is reported.
+# Keep a copy when the run failed. It is the proxy's own output, so it can
+# contain URLs from the session; hence 0600 (umask above) and failures only.
+LAST_LOG="${XDG_STATE_HOME:-$HOME/.local/state}/jbvip/last-run.log"
+MITM=""
+
+cleanup() {
+  status=$?
+  if [ "$status" -ne 0 ] && [ -f "$STATE/mitm.log" ]; then
+    if mkdir -p "$(dirname "$LAST_LOG")" 2>/dev/null &&
+       cp -f "$STATE/mitm.log" "$LAST_LOG" 2>/dev/null; then
+      echo "jbvip: proxy log kept at $LAST_LOG" >&2
+    fi
+  fi
+  if [ -n "$MITM" ]; then
+    kill "$MITM" 2>/dev/null || true
+  fi
+  rm -rf "$STATE"
+}
+trap cleanup EXIT INT TERM
 
 # The CA file the game's statically-linked libcurl reads (it ignores SSL_CERT_FILE).
 SYS_CA=""
@@ -65,7 +85,6 @@ fi
 mitmdump --mode transparent --listen-port "$PORT" -s "$REPO/extractor/addon.py" \
   >"$STATE/mitm.log" 2>&1 &
 MITM=$!
-trap 'kill "$MITM" 2>/dev/null; rm -rf "$STATE"' EXIT INT TERM
 
 ready=0
 for _ in $(seq 1 60); do

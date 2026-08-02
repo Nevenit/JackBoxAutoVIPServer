@@ -143,10 +143,27 @@ class RoomCodeExtractor:
 
 
 def _build_sinks():
-    """The LAN server always; the relay publisher when it is configured."""
+    """The LAN server always; the relay publisher when it is configured.
+
+    Half-configured is loud, because it is otherwise undiagnosable: the user
+    gets a LAN-only setup and the only place this is visible is the proxy log.
+    Never logs the token's value.
+    """
     sinks = [RoomCodeServer(port=38469)]
     base_url = os.environ.get("JBVIP_RELAY_URL", "")
     token = os.environ.get("JBVIP_RELAY_TOKEN", "")
+    if base_url and not token:
+        logger.warning(
+            "JBVIP_RELAY_URL is set but JBVIP_RELAY_TOKEN is not; relay "
+            "publishing is disabled and the room code stays LAN-only. Set both "
+            "in ~/.config/jbvip/relay.env."
+        )
+    elif token and not base_url:
+        logger.warning(
+            "JBVIP_RELAY_TOKEN is set but JBVIP_RELAY_URL is not; relay "
+            "publishing is disabled and the room code stays LAN-only. Set both "
+            "in ~/.config/jbvip/relay.env."
+        )
     if base_url and token:
         try:
             sinks.append(RelayPublisher(base_url, token))

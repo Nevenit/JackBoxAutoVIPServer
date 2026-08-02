@@ -366,6 +366,37 @@ def test_build_sinks_adds_the_relay_when_configured(monkeypatch):
     ]
 
 
+def test_build_sinks_warns_when_only_the_relay_url_is_set(monkeypatch, caplog):
+    # Half-configured is the easiest mistake to make and used to be completely
+    # silent: LAN-only with no error, no warning and no log line.
+    monkeypatch.setenv("JBVIP_RELAY_URL", "https://relay.example")
+    monkeypatch.delenv("JBVIP_RELAY_TOKEN", raising=False)
+    with caplog.at_level("WARNING"):
+        sinks = addon_module._build_sinks()
+    assert [type(s).__name__ for s in sinks] == ["RoomCodeServer"]
+    assert "JBVIP_RELAY_TOKEN" in caplog.text
+
+
+def test_build_sinks_warns_when_only_the_relay_token_is_set(monkeypatch, caplog):
+    monkeypatch.delenv("JBVIP_RELAY_URL", raising=False)
+    monkeypatch.setenv("JBVIP_RELAY_TOKEN", "pub-token")
+    with caplog.at_level("WARNING"):
+        sinks = addon_module._build_sinks()
+    assert [type(s).__name__ for s in sinks] == ["RoomCodeServer"]
+    assert "JBVIP_RELAY_URL" in caplog.text
+    assert "pub-token" not in caplog.text
+
+
+def test_build_sinks_says_nothing_when_the_relay_is_simply_not_configured(
+    monkeypatch, caplog
+):
+    monkeypatch.delenv("JBVIP_RELAY_URL", raising=False)
+    monkeypatch.delenv("JBVIP_RELAY_TOKEN", raising=False)
+    with caplog.at_level("WARNING"):
+        addon_module._build_sinks()
+    assert caplog.text == ""
+
+
 def test_build_sinks_degrades_to_lan_only_on_a_malformed_relay_url(monkeypatch):
     # http:// is refused by RelayPublisher; losing the relay must never cost
     # the LAN server, and must not raise out of addon import.

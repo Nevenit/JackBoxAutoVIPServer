@@ -87,6 +87,69 @@ def test_a_real_environment_variable_still_works_without_a_config_file(tmp_path)
     assert result["url"] == "https://env.example"
 
 
+_CLEANUP_START = "LAST_LOG="
+_CLEANUP_END = "trap cleanup EXIT INT TERM"
+
+
+def cleanup_block() -> str:
+    """The launcher's cleanup trap, so the test runs the real code."""
+    lines = LAUNCHER.read_text().splitlines()
+    starts = [i for i, line in enumerate(lines) if line.startswith(_CLEANUP_START)]
+    ends = [i for i, line in enumerate(lines) if line.strip() == _CLEANUP_END]
+    assert starts and ends, "jbvip-run.sh no longer has a cleanup trap"
+    return "\n".join(lines[starts[0]: ends[0] + 1])
+
+
+def run_cleanup(tmp_path, exit_status: int):
+    """Exercise the trap exactly as the launcher does, then report the aftermath."""
+    state = tmp_path / "run-state"
+    state.mkdir(mode=0o700)
+    log = state / "mitm.log"
+    log.write_text("jbvip: JBVIP_RELAY_TOKEN is not set\n")
+    log.chmod(0o600)  # as the launcher's `umask 077` makes it
+    script = (
+        "set -euo pipefail\n"
+        "umask 077\n"  # the launcher sets this before the block below
+        f'STATE="{state}"\n'
+        + cleanup_block()
+        + f"\nexit {exit_status}\n"
+    )
+    done = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        env={
+            "HOME": str(tmp_path),
+            "PATH": "/usr/bin:/bin",
+            "XDG_STATE_HOME": str(tmp_path / "state"),
+        },
+    )
+    return done, tmp_path / "state" / "jbvip" / "last-run.log", state
+
+
+def test_a_failed_run_keeps_the_proxy_log(tmp_path):
+    # The proxy log is the only place a relay misconfiguration is reported, and
+    # $STATE is deleted on every exit path.
+    done, last_log, state = run_cleanup(tmp_path, exit_status=7)
+    assert done.returncode == 7
+    assert last_log.read_text() == "jbvip: JBVIP_RELAY_TOKEN is not set\n"
+    assert not state.exists()
+
+
+def test_the_kept_log_is_not_readable_by_other_users(tmp_path):
+    # It is mitmdump's own output, so it can carry URLs from the session.
+    _, last_log, _ = run_cleanup(tmp_path, exit_status=7)
+    assert last_log.stat().st_mode & 0o077 == 0
+    assert last_log.parent.stat().st_mode & 0o077 == 0
+
+
+def test_a_successful_run_keeps_nothing(tmp_path):
+    done, last_log, state = run_cleanup(tmp_path, exit_status=0)
+    assert done.returncode == 0
+    assert not last_log.exists()
+    assert not state.exists()
+
+
 @pytest.mark.parametrize("variable", ["JBVIP_RELAY_URL", "JBVIP_RELAY_TOKEN"])
 def test_the_readme_does_not_tell_the_user_to_export_the_relay_variables(variable):
     # The documented procedure was the bug: an export in a terminal cannot reach
