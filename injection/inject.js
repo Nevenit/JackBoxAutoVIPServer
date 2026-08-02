@@ -3,6 +3,15 @@
  * Sole contract with the client:
  *   window.jbvipJoin(code, name) -> Promise<{ok: boolean, reason?: string}>
  *
+ * NOT re-entrant: it drives one shared form, so two overlapping calls fight
+ * over the same inputs. The caller is responsible for de-duplicating — one
+ * in-flight join at a time, and no repeat for a code already joined.
+ *
+ * `reason` is for a human to read, never for a machine to branch on, and on
+ * the visibleFailureText path it is arbitrary text lifted from the page. A
+ * consumer must not log it blindly (it can carry the room code, or anything
+ * else the page chooses to render) and must not interpolate it into markup.
+ *
  * Selectors are ids verified against the shipped @connect bundle on 2026-08-01.
  * The inputs are Vue `modelValue`-bound: assigning `.value` alone does NOT
  * update Vue's model, so a bubbling `input` event must be dispatched. */
@@ -34,6 +43,8 @@
     });
   }
 
+  // Whatever the page is showing the user. Arbitrary page-controlled text —
+  // see the re-entrancy/`reason` note at the top before doing anything with it.
   function visibleFailureText() {
     var el = document.querySelector('.warnings') || document.querySelector('.status');
     var text = el && el.textContent ? el.textContent.trim() : '';

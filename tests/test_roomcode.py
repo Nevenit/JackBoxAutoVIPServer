@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from extractor.roomcode import (
     extract_code_from_url,
     code_from_create_response,
@@ -151,3 +153,17 @@ def test_looks_like_code():
     assert not looks_like_code("héll")         # non-ASCII alnum
     assert not looks_like_code("ⅫⅫ")           # Roman numerals
     assert not looks_like_code(1234)           # non-string
+
+
+# The length boundaries are pinned at exactly 1/2/8/9 here and identically in
+# tests/test_relay_state.py. relay.state._looks_like_code duplicates this
+# function on purpose — the relay deploys to a VPS without the extractor
+# package — so these two sets of cases are what stops them drifting apart.
+@pytest.mark.parametrize("code", ["AB", "ABCDEFGH"])
+def test_looks_like_code_accepts_the_length_boundaries(code):
+    assert looks_like_code(code) is True
+
+
+@pytest.mark.parametrize("code", ["A", "ABCDEFGHI"])
+def test_looks_like_code_rejects_just_outside_the_length_boundaries(code):
+    assert looks_like_code(code) is False

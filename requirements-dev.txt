@@ -1,4 +1,6 @@
 -r requirements.txt
 starlette>=0.37
-uvicorn>=0.30
+# [standard] pulls in httptools + uvloop: SSE streaming is the subtlest thing
+# here and should be tested on the same HTTP implementation production runs.
+uvicorn[standard]>=0.30
 httpx>=0.27
