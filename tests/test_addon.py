@@ -347,3 +347,30 @@ def test_the_lan_server_is_a_critical_sink():
 def test_constructing_with_no_sinks_is_refused():
     with pytest.raises(ValueError):
         RoomCodeExtractor()
+
+
+def test_build_sinks_is_lan_only_without_relay_configuration(monkeypatch):
+    monkeypatch.delenv("JBVIP_RELAY_URL", raising=False)
+    monkeypatch.delenv("JBVIP_RELAY_TOKEN", raising=False)
+    assert [type(s).__name__ for s in addon_module._build_sinks()] == [
+        "RoomCodeServer"
+    ]
+
+
+def test_build_sinks_adds_the_relay_when_configured(monkeypatch):
+    monkeypatch.setenv("JBVIP_RELAY_URL", "https://relay.example")
+    monkeypatch.setenv("JBVIP_RELAY_TOKEN", "pub-token")
+    assert [type(s).__name__ for s in addon_module._build_sinks()] == [
+        "RoomCodeServer",
+        "RelayPublisher",
+    ]
+
+
+def test_build_sinks_degrades_to_lan_only_on_a_malformed_relay_url(monkeypatch):
+    # http:// is refused by RelayPublisher; losing the relay must never cost
+    # the LAN server, and must not raise out of addon import.
+    monkeypatch.setenv("JBVIP_RELAY_URL", "http://relay.example")
+    monkeypatch.setenv("JBVIP_RELAY_TOKEN", "pub-token")
+    assert [type(s).__name__ for s in addon_module._build_sinks()] == [
+        "RoomCodeServer"
+    ]
