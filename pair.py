@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """Mint a pairing code so the phone app can subscribe to the relay.
 
-Usage:
+Usage — the same two variables the launcher reads from
+~/.config/jbvip/relay.env, so the easy way is to load that file:
+
+    set -a; . ~/.config/jbvip/relay.env; set +a
+    python3 pair.py
+
+or pass them directly:
+
     JBVIP_RELAY_URL=https://relay.example \
     JBVIP_RELAY_TOKEN=<publisher token> \
     python3 pair.py
