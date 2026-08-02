@@ -6,7 +6,7 @@ import httpx
 import pytest
 import uvicorn
 
-from relay.app import build_app
+from relay.app import Relay, build_app
 from relay.state import RateLimiter, RelayState
 
 
@@ -78,6 +78,35 @@ async def test_publish_accepts_a_valid_code(tmp_path):
         )
     assert response.status_code == 204
     assert state.current_code().code == "WEWW"
+
+
+async def test_a_non_ascii_bearer_token_is_rejected_not_a_server_error(tmp_path):
+    # Raw bytes, not "Bearer \xff": httpx refuses to ascii-encode that, while a
+    # hand-rolled client puts the byte straight on the wire. The ASGI server
+    # then hands it to Starlette, which decodes headers as latin-1.
+    _, app = make(tmp_path)
+    async with serving(app) as http:
+        response = await http.post(
+            "/publish",
+            json={"code": "WEWW", "ts": 1000.0},
+            headers=[(b"authorization", b"Bearer \xff")],
+        )
+    assert response.status_code == 401
+
+
+async def test_publish_rejects_a_non_finite_timestamp(tmp_path):
+    # json.loads accepts a bare NaN, so this reaches the handler as a float.
+    _, app = make(tmp_path)
+    async with serving(app) as http:
+        response = await http.post(
+            "/publish",
+            content='{"code": "WEWW", "ts": NaN}',
+            headers={
+                "Authorization": "Bearer pub",
+                "Content-Type": "application/json",
+            },
+        )
+    assert response.status_code == 400
 
 
 async def test_publish_rejects_an_implausible_code(tmp_path):
@@ -178,6 +207,76 @@ async def test_pairing_persists_the_token_to_disk(tmp_path):
     assert load_tokens(tmp_path / "tokens.json") == [
         paired.json()["subscriber_token"]
     ]
+
+
+def break_saving(monkeypatch):
+    """Make persistence fail the way a root-owned /var/lib/jbvip would."""
+    import relay.app
+
+    def explode(path, tokens):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(relay.app, "save_tokens", explode)
+
+
+async def pair_once(http):
+    minted = await http.post(
+        "/pairing-codes", headers={"Authorization": "Bearer pub"}
+    )
+    return await http.post(
+        "/pair", json={"pairing_code": minted.json()["pairing_code"]}
+    )
+
+
+async def test_pairing_still_hands_back_a_token_when_the_save_fails(
+    tmp_path, monkeypatch
+):
+    # The pairing code is already burned by the time save_tokens runs. Failing
+    # the request would leave the phone with nothing and the code unusable, so
+    # a subscriber that works until the next restart is the better degradation.
+    break_saving(monkeypatch)
+    state, app = make(tmp_path, subscribers=())
+    async with serving(app) as http:
+        paired = await pair_once(http)
+
+    assert paired.status_code == 200
+    assert state.is_subscriber(paired.json()["subscriber_token"])
+
+
+async def test_a_failed_token_save_is_warned_about_without_the_token(
+    tmp_path, monkeypatch, caplog
+):
+    break_saving(monkeypatch)
+    _, app = make(tmp_path, subscribers=())
+    with caplog.at_level("WARNING"):
+        async with serving(app) as http:
+            paired = await pair_once(http)
+
+    assert "read-only file system" in caplog.text
+    assert paired.json()["subscriber_token"] not in caplog.text
+
+
+async def test_a_subscriber_that_stops_draining_is_dropped(tmp_path):
+    # The stream generator's `finally` is the only place a queue is
+    # unregistered, and it never runs if the task is cancelled before the
+    # generator body starts. Bounding the queue caps the damage to 64 payloads.
+    relay = Relay(RelayState("pub", ["sub"], now=Clock()), tmp_path / "tokens.json")
+    queue = asyncio.Queue(maxsize=2)
+    relay._subscribers.add(queue)
+    for _ in range(3):
+        relay._fan_out({"code": "WEWW", "ts": 1000.0})
+    assert queue not in relay._subscribers
+    assert queue.qsize() == 2
+
+
+async def test_an_abandoned_queue_does_not_stall_a_live_subscriber(tmp_path):
+    relay = Relay(RelayState("pub", ["sub"], now=Clock()), tmp_path / "tokens.json")
+    abandoned, live = asyncio.Queue(maxsize=1), asyncio.Queue(maxsize=8)
+    relay._subscribers.update({abandoned, live})
+    for _ in range(3):
+        relay._fan_out({"code": "WEWW", "ts": 1000.0})
+    assert live in relay._subscribers
+    assert live.qsize() == 3
 
 
 async def test_an_unknown_pairing_code_is_refused(tmp_path):

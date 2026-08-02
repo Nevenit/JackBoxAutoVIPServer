@@ -48,6 +48,24 @@ def test_current_code_survives_right_up_to_the_window():
     assert state.current_code().code == "WEWW"
 
 
+def test_freshness_uses_the_relay_clock_not_the_publisher_timestamp():
+    # A host PC with a badly-skewed clock must not make every code look stale.
+    clock = Clock(1000.0)
+    state = RelayState("pub", now=clock)
+    state.publish("WEWW", ts=0.0)  # publisher's clock is hours behind
+    assert state.current_code().code == "WEWW"
+    assert state.current_code().ts == 0.0  # the client still sees the real stamp
+
+
+def test_a_code_from_a_fast_host_clock_still_goes_stale_on_time():
+    # The mirror case: a host clock hours *ahead* must not disable the window.
+    clock = Clock(1000.0)
+    state = RelayState("pub", now=clock)
+    state.publish("WEWW", ts=1_000_000.0)
+    clock.t = 1000.0 + FRESH_SECONDS + 1
+    assert state.current_code() is None
+
+
 def test_publish_reports_whether_the_code_changed():
     state = RelayState("pub", now=Clock())
     assert state.publish("WEWW", 1000.0) is True
@@ -60,6 +78,41 @@ def test_publish_rejects_implausible_codes(bad):
     state = RelayState("pub", now=Clock())
     with pytest.raises(ValueError):
         state.publish(bad, 1000.0)
+
+
+# The length boundaries are pinned at exactly 1/2/8/9 here and identically in
+# tests/test_roomcode.py. relay.state._looks_like_code duplicates
+# extractor.roomcode.looks_like_code on purpose — the relay deploys without the
+# extractor package — so these two sets of cases are what stops them drifting.
+@pytest.mark.parametrize("code", ["AB", "ABCDEFGH"])
+def test_publish_accepts_the_code_length_boundaries(code):
+    state = RelayState("pub", now=Clock())
+    assert state.publish(code, 1000.0) is True
+
+
+@pytest.mark.parametrize("code", ["A", "ABCDEFGHI"])
+def test_publish_rejects_codes_just_outside_the_length_boundaries(code):
+    state = RelayState("pub", now=Clock())
+    with pytest.raises(ValueError):
+        state.publish(code, 1000.0)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_publish_rejects_a_non_finite_timestamp(bad):
+    # json.loads accepts a bare NaN, and `now - nan > 120` is False, so a NaN
+    # stamp would be permanently "fresh" — and json.dumps re-emits it as JSON
+    # no client can parse.
+    state = RelayState("pub", now=Clock())
+    with pytest.raises(ValueError):
+        state.publish("WEWW", bad)
+
+
+def test_a_non_ascii_token_is_rejected_rather_than_raising():
+    # Starlette decodes headers as latin-1, so any byte >= 0x80 reaches us as a
+    # non-ASCII str, which secrets.compare_digest refuses to compare.
+    state = RelayState("pub", ["sub"], now=Clock())
+    assert state.is_publisher("\xff") is False
+    assert state.is_subscriber("\xff") is False
 
 
 def test_publisher_token_recognised_and_others_rejected():

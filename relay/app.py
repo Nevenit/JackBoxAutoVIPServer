@@ -5,6 +5,7 @@ logged here or anywhere else in the relay.
 """
 import asyncio
 import json
+import logging
 import os
 import time
 
@@ -15,8 +16,14 @@ from starlette.routing import Route
 from relay.state import RateLimiter, RelayState
 from relay.tokens import load_tokens, save_tokens
 
+logger = logging.getLogger(__name__)
+
 KEEPALIVE_SECONDS = 20.0
 DEFAULT_TOKENS_PATH = "/var/lib/jbvip/tokens.json"
+# A subscriber that has stopped draining is dropped once this many payloads
+# have backed up. Also the backstop for a stream cancelled before its generator
+# body runs, whose `finally` never executes and so never unregisters the queue.
+SUBSCRIBER_QUEUE_SIZE = 64
 
 
 def _bearer(request) -> str:
@@ -50,7 +57,14 @@ class Relay:
 
     def _fan_out(self, payload: dict) -> None:
         for queue in list(self._subscribers):
-            queue.put_nowait(payload)
+            try:
+                queue.put_nowait(payload)
+            except asyncio.QueueFull:
+                # It is not draining and never will; unbounded growth is the
+                # only thing worse than losing it. Nothing is logged: a
+                # subscriber's existence is not worth a log line, and the
+                # payload holds a room code.
+                self._subscribers.discard(queue)
 
     async def publish(self, request):
         if not self.state.is_publisher(_bearer(request)):
@@ -75,7 +89,7 @@ class Relay:
         if not self.state.is_subscriber(_bearer(request)):
             return JSONResponse({"error": "unauthorized"}, status_code=401)
 
-        queue: asyncio.Queue = asyncio.Queue()
+        queue: asyncio.Queue = asyncio.Queue(maxsize=SUBSCRIBER_QUEUE_SIZE)
         self._subscribers.add(queue)
         current = self.state.current_code()
         if current is not None:
@@ -120,7 +134,20 @@ class Relay:
             return JSONResponse(
                 {"error": "invalid or expired pairing code"}, status_code=400
             )
-        save_tokens(self.tokens_path, self.state.subscriber_tokens)
+        try:
+            save_tokens(self.tokens_path, self.state.subscriber_tokens)
+        except OSError as exc:
+            # The pairing code is already burned and the token is already live
+            # in memory. Returning 500 here would leave the phone with nothing
+            # and the code unusable, and re-running pair.py would hit the same
+            # wall. A subscriber that works until the next restart is strictly
+            # better (spec §7: every failure degrades). Never logs the token.
+            logger.warning(
+                "could not persist subscriber tokens to %s (%s); the new "
+                "subscriber will stop working when the relay restarts",
+                self.tokens_path,
+                exc,
+            )
         return JSONResponse({"subscriber_token": token})
 
 
