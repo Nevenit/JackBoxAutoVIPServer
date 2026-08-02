@@ -65,26 +65,39 @@ class RelayPublisher:
         self._backoff = backoff
         self._sleep = sleep
         self._now = now
+        self._last_sent: str | None = None
 
     async def start(self) -> None:
         return None
 
     async def set_code(self, code: str) -> None:
-        """Publish best-effort. Never raises: a dead relay must not disturb a game."""
+        """Publish best-effort. Never raises: a dead relay must not disturb a game.
+
+        Mirrors RoomCodeServer.set_code's repeat guard. One session yields the
+        same code from several hooks — the create response and websocket_start
+        on ecast, one per frame on Blobcast — and each duplicate costs up to
+        three attempts x a 5s timeout on the shared executor, plus one of the
+        relay's 60/min publishes. Only a *delivered* code counts as sent, so a
+        transient outage cannot suppress that code for the rest of the session.
+        """
+        if code == self._last_sent:
+            return
         try:
-            await self._publish(code)
+            if await self._publish(code):
+                self._last_sent = code
         except Exception:
             # Backstop so nothing from this sink can escape into mitmproxy.
             # Deliberately does not log the code itself.
             logger.exception("relay publish failed unexpectedly")
 
-    async def _publish(self, code: str) -> None:
+    async def _publish(self, code: str) -> bool:
+        """True once the relay has accepted the code, False once attempts run out."""
         payload = {"code": code, "ts": self._now()}
         delay = self._backoff
         for attempt in range(1, self._attempts + 1):
             try:
                 await asyncio.to_thread(self._post, self._url, self._token, payload)
-                return
+                return True
             except Exception as exc:
                 if attempt >= self._attempts:
                     # Deliberately does not log the code itself.
@@ -93,6 +106,7 @@ class RelayPublisher:
                         self._attempts,
                         exc,
                     )
-                    return
+                    return False
                 await self._sleep(delay)
                 delay *= 2
+        return False

@@ -83,6 +83,36 @@ async def test_the_attempt_count_is_configurable():
     assert len(post.calls) == 5
 
 
+async def test_a_repeated_code_is_not_republished():
+    # A normal PP9 session yields the same code at least twice: once from the
+    # POST /api/v2/rooms response, once from websocket_start on the play URL.
+    post = RecordingPost()
+    publisher = make(post)
+    await publisher.set_code("WEWW")
+    await publisher.set_code("WEWW")
+    await publisher.set_code("ZZZZ")
+    assert [call[2]["code"] for call in post.calls] == ["WEWW", "ZZZZ"]
+
+
+async def test_a_repeated_code_is_republished_after_the_code_changes_back():
+    post = RecordingPost()
+    publisher = make(post)
+    await publisher.set_code("WEWW")
+    await publisher.set_code("ZZZZ")
+    await publisher.set_code("WEWW")
+    assert [call[2]["code"] for call in post.calls] == ["WEWW", "ZZZZ", "WEWW"]
+
+
+async def test_a_failed_publish_does_not_suppress_a_later_retry_of_the_same_code():
+    # Otherwise one transient outage suppresses that code for the whole session.
+    post = RecordingPost(failures=99)
+    publisher = make(post)
+    await publisher.set_code("WEWW")
+    attempts_after_first = len(post.calls)
+    await publisher.set_code("WEWW")
+    assert len(post.calls) > attempts_after_first
+
+
 async def test_start_is_a_no_op():
     assert await make(RecordingPost()).start() is None
 
