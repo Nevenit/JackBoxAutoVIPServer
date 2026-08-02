@@ -111,25 +111,34 @@ house — you can run the small relay in `relay/` on a VPS. The host pushes the
 code out over ordinary outbound HTTPS, so there is nothing to port-forward and
 nothing new listening on your machine.
 
-See `relay/README.md` for deployment. Once it is running, set two variables
-before launching a game:
+See `relay/README.md` for deployment. Once it is running, create
+`~/.config/jbvip/relay.env` — the launcher reads it on every game launch:
 
 ```bash
-export JBVIP_RELAY_URL=https://your-relay.example
-export JBVIP_RELAY_TOKEN=<the publisher token>
+mkdir -p ~/.config/jbvip
+cat > ~/.config/jbvip/relay.env <<'EOF'
+JBVIP_RELAY_URL=https://your-relay.example
+JBVIP_RELAY_TOKEN=<the publisher token>
+EOF
+chmod 600 ~/.config/jbvip/relay.env
 ```
 
-Then pair a client once:
+A file rather than `export` because Steam launches the game with the environment
+the Steam client itself started with, so variables exported in a terminal never
+reach it.
+
+`pair.py` reads the same two variables, so load them into your shell first:
 
 ```bash
+set -a; . ~/.config/jbvip/relay.env; set +a
 python3 pair.py
 ```
 
 That prints a relay host and a six-character pairing code to enter in the
 client. The pairing code is single-use and expires after five minutes.
 
-The relay is entirely optional. With these variables unset, everything works
-exactly as before, LAN-only.
+The relay is entirely optional. Without that file, everything works exactly as
+before, LAN-only.
 
 ## Uninstall
 

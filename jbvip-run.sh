@@ -21,7 +21,13 @@ set -euo pipefail
 PORT="${JBVIP_PROXY_PORT:-8081}"
 REPO="$(dirname "$(readlink -f "$0")")"
 export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
-# Optional relay. Unset means LAN-only, which is the supported default.
+# Optional relay config. Steam launch options inherit the Steam client's
+# environment, not a shell's, so a terminal `export` would never reach us.
+RELAY_ENV="${XDG_CONFIG_HOME:-$HOME/.config}/jbvip/relay.env"
+# shellcheck source=/dev/null
+[ -r "$RELAY_ENV" ] && . "$RELAY_ENV"
+# Normalise unset to empty so `set -u` stays safe, and so a run invoked directly
+# from a shell (rather than by Steam) still honours real environment variables.
 export JBVIP_RELAY_URL="${JBVIP_RELAY_URL:-}"
 export JBVIP_RELAY_TOKEN="${JBVIP_RELAY_TOKEN:-}"
 CGROUP=/sys/fs/cgroup/net_cls/jbvip
