@@ -137,6 +137,12 @@ python3 pair.py
 That prints a relay host and a six-character pairing code to enter in the
 client. The pairing code is single-use and expires after five minutes.
 
+If the relay does not seem to be working, launch a game once and then look at
+`~/.local/state/jbvip/last-run.log`. The launcher keeps the proxy log there —
+and only there, and only when that run actually reported a relay problem, with
+room codes redacted out of it. Nothing is kept when the relay is working or
+when it is not configured at all.
+
 The relay is entirely optional. Without that file, everything works exactly as
 before, LAN-only.
 

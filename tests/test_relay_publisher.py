@@ -124,6 +124,15 @@ async def test_the_room_code_is_never_logged(caplog):
     assert "SECRET1" not in caplog.text
 
 
+async def test_a_publish_failure_is_marked_for_the_launcher_to_find(caplog):
+    # jbvip-run.sh greps the proxy log for this marker to decide whether the
+    # run said anything about the relay worth keeping.
+    post = RecordingPost(failures=99)
+    with caplog.at_level("WARNING"):
+        await make(post).set_code("WEWW")
+    assert relay_publisher.LOG_MARKER in caplog.text
+
+
 async def test_set_code_never_raises_when_the_clock_fails():
     def broken_clock():
         raise RuntimeError("clock unavailable")

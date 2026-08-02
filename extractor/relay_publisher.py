@@ -15,6 +15,13 @@ DEFAULT_ATTEMPTS = 3
 DEFAULT_BACKOFF_SECONDS = 0.5
 REQUEST_TIMEOUT_SECONDS = 5.0
 
+# Every log line that means "the relay is not working" starts with this.
+# jbvip-run.sh greps the proxy log for it to decide whether the run produced
+# anything worth keeping — the relay is the one part of this that otherwise
+# fails in total silence. Changing it means changing jbvip-run.sh too, and
+# tests/test_launcher.py pins the two together.
+LOG_MARKER = "jbvip-relay:"
+
 
 def _urllib_post(url: str, token: str, payload: dict) -> None:
     request = urllib.request.Request(
@@ -88,7 +95,7 @@ class RelayPublisher:
         except Exception:
             # Backstop so nothing from this sink can escape into mitmproxy.
             # Deliberately does not log the code itself.
-            logger.exception("relay publish failed unexpectedly")
+            logger.exception("%s publish failed unexpectedly", LOG_MARKER)
 
     async def _publish(self, code: str) -> bool:
         """True once the relay has accepted the code, False once attempts run out."""
@@ -102,7 +109,8 @@ class RelayPublisher:
                 if attempt >= self._attempts:
                     # Deliberately does not log the code itself.
                     logger.warning(
-                        "relay publish failed after %d attempts: %s",
+                        "%s publish failed after %d attempts: %s",
+                        LOG_MARKER,
                         self._attempts,
                         exc,
                     )

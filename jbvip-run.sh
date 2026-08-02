@@ -45,18 +45,32 @@ STATE="$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/jbvip.XXXXXX")"
 CA="$HOME/.mitmproxy/mitmproxy-ca-cert.pem"
 BUNDLE="$STATE/cabundle.pem"
 # $STATE is deleted on every exit path, which used to take the proxy log with
-# it — and that log is the only place a relay misconfiguration is reported.
-# Keep a copy when the run failed. It is the proxy's own output, so it can
-# contain URLs from the session; hence 0600 (umask above) and failures only.
+# it — and that log is the only place a relay problem is ever reported.
+#
+# Kept only when the log actually says something about the relay (the addon
+# marks those lines with LOG_MARKER, see extractor/relay_publisher.py). Not on
+# every failed run: Jackbox games exit non-zero routinely, so that would keep a
+# log per launch, almost always with nothing in it worth reading.
+#
+# Redacted on the way out. The log is mitmdump's own output and at
+# flow_detail=1 it prints the request URL — and the ecast play websocket URL is
+# /api/v2/rooms/<CODE>/play, once per frame. Room codes are never written to
+# disk anywhere else in this project and must not start here.
 LAST_LOG="${XDG_STATE_HOME:-$HOME/.local/state}/jbvip/last-run.log"
+# Must match extractor.relay_publisher.LOG_MARKER; tests/test_launcher.py
+# fails if the two drift apart.
+LOG_MARKER="jbvip-relay:"
+# Anchored on the '/rooms/' segment and deliberately not requiring a trailing
+# delimiter, because flow_detail=1 truncates long URLs mid-code.
+REDACT_CODES='s#(/rooms/)[A-Za-z0-9]+#\1<redacted>#g'
 MITM=""
 
 cleanup() {
-  status=$?
-  if [ "$status" -ne 0 ] && [ -f "$STATE/mitm.log" ]; then
+  if [ -f "$STATE/mitm.log" ] && grep -qF "$LOG_MARKER" "$STATE/mitm.log"; then
     if mkdir -p "$(dirname "$LAST_LOG")" 2>/dev/null &&
-       cp -f "$STATE/mitm.log" "$LAST_LOG" 2>/dev/null; then
-      echo "jbvip: proxy log kept at $LAST_LOG" >&2
+       sed -E "$REDACT_CODES" "$STATE/mitm.log" >"$LAST_LOG" 2>/dev/null; then
+      chmod 600 "$LAST_LOG" 2>/dev/null || true
+      echo "jbvip: the relay reported a problem; log kept at $LAST_LOG" >&2
     fi
   fi
   if [ -n "$MITM" ]; then
@@ -82,7 +96,14 @@ fi
 # Transparent proxy: the kernel redirect (jbvip-redirect-up.sh) sends the game's
 # :443/:38203 here; mitmproxy reads SO_ORIGINAL_DST. The addon also opens the
 # RoomCode:<CODE> server on :38469.
-mitmdump --mode transparent --listen-port "$PORT" -s "$REPO/extractor/addon.py" \
+# flow_detail is pinned rather than left at its default: at 3 and above mitmdump
+# prints websocket message contents and response bodies, which is where every
+# other protocol's room code lives (Blobcast's roomId frames, the ecast create
+# response). Pinned to 1, the URL is the only place a code can appear, and the
+# redaction in cleanup() covers it. ~/.mitmproxy/config.yaml cannot override a
+# command-line --set.
+mitmdump --mode transparent --listen-port "$PORT" --set flow_detail=1 \
+  -s "$REPO/extractor/addon.py" \
   >"$STATE/mitm.log" 2>&1 &
 MITM=$!
 

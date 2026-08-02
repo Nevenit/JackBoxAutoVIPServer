@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from extractor.relay_publisher import LOG_MARKER
+
 REPO = Path(__file__).resolve().parent.parent
 LAUNCHER = REPO / "jbvip-run.sh"
 README = REPO / "README.md"
@@ -100,12 +102,30 @@ def cleanup_block() -> str:
     return "\n".join(lines[starts[0]: ends[0] + 1])
 
 
-def run_cleanup(tmp_path, exit_status: int):
+RELAY_WARNING = (
+    f"[19:26:21.486] {LOG_MARKER} JBVIP_RELAY_URL is set but "
+    "JBVIP_RELAY_TOKEN is not; relay publishing is disabled.\n"
+)
+# Real mitmdump flow_detail=1 output. The play URL carries the room code, and
+# websocket_message echoes request.path once per frame.
+FLOW_LINES = (
+    "127.0.0.1:52088: POST https://ecast.jackboxgames.com/api/v2/rooms\n"
+    "127.0.0.1:52090: GET "
+    "https://ecast-prod-use2.jackboxgames.com/api/v2/rooms/WXYZ/play\n"
+    "127.0.0.1:52090 <- WebSocket text message <- 1.2.3.4:443"
+    "/api/v2/rooms/WXYZ/play?role=host\n"
+    # flow_detail=1 truncates a long URL mid-code, so a redaction that needs a
+    # trailing delimiter would leak the first characters.
+    "127.0.0.1:52090: GET https://ecast-prod-use2.jackboxgames.com/api/v2/rooms/W…\n"
+)
+
+
+def run_cleanup(tmp_path, log_text: str, exit_status: int = 0):
     """Exercise the trap exactly as the launcher does, then report the aftermath."""
     state = tmp_path / "run-state"
     state.mkdir(mode=0o700)
     log = state / "mitm.log"
-    log.write_text("jbvip: JBVIP_RELAY_TOKEN is not set\n")
+    log.write_text(log_text)
     log.chmod(0o600)  # as the launcher's `umask 077` makes it
     script = (
         "set -euo pipefail\n"
@@ -127,27 +147,54 @@ def run_cleanup(tmp_path, exit_status: int):
     return done, tmp_path / "state" / "jbvip" / "last-run.log", state
 
 
-def test_a_failed_run_keeps_the_proxy_log(tmp_path):
-    # The proxy log is the only place a relay misconfiguration is reported, and
+def test_a_run_that_reported_a_relay_problem_keeps_the_log(tmp_path):
+    # The proxy log is the only place a relay problem is ever reported, and
     # $STATE is deleted on every exit path.
-    done, last_log, state = run_cleanup(tmp_path, exit_status=7)
-    assert done.returncode == 7
-    assert last_log.read_text() == "jbvip: JBVIP_RELAY_TOKEN is not set\n"
+    done, last_log, state = run_cleanup(tmp_path, RELAY_WARNING)
+    assert done.returncode == 0
+    assert LOG_MARKER in last_log.read_text()
+    assert "the relay reported a problem" in done.stderr
     assert not state.exists()
 
 
+def test_the_kept_log_has_room_codes_redacted(tmp_path):
+    _, last_log, _ = run_cleanup(tmp_path, RELAY_WARNING + FLOW_LINES)
+    kept = last_log.read_text()
+    assert "WXYZ" not in kept
+    assert "/rooms/W…" not in kept  # the truncated-URL case
+    assert kept.count("/rooms/<redacted>") == 3
+    # The create POST carries no code and is the line that proves the redirect
+    # is working, so it must survive intact.
+    assert "POST https://ecast.jackboxgames.com/api/v2/rooms\n" in kept
+    assert LOG_MARKER in kept
+
+
 def test_the_kept_log_is_not_readable_by_other_users(tmp_path):
-    # It is mitmdump's own output, so it can carry URLs from the session.
-    _, last_log, _ = run_cleanup(tmp_path, exit_status=7)
+    _, last_log, _ = run_cleanup(tmp_path, RELAY_WARNING)
     assert last_log.stat().st_mode & 0o077 == 0
     assert last_log.parent.stat().st_mode & 0o077 == 0
 
 
-def test_a_successful_run_keeps_nothing(tmp_path):
-    done, last_log, state = run_cleanup(tmp_path, exit_status=0)
-    assert done.returncode == 0
+def test_a_run_with_nothing_to_say_about_the_relay_keeps_nothing(tmp_path):
+    # Jackbox games exit non-zero routinely; keeping a log every time would be
+    # noise, and would put a room code on disk for no reason.
+    done, last_log, state = run_cleanup(tmp_path, FLOW_LINES, exit_status=7)
+    assert done.returncode == 7
     assert not last_log.exists()
     assert not state.exists()
+
+
+def test_the_shell_and_the_addon_agree_on_the_log_marker():
+    # The launcher greps the proxy log for the marker the addon writes. If they
+    # drift, a relay problem is silently discarded again.
+    assert f'LOG_MARKER="{LOG_MARKER}"' in LAUNCHER.read_text()
+
+
+def test_the_launcher_pins_mitmdump_flow_detail():
+    # At flow_detail >= 3 mitmdump prints websocket message contents and
+    # response bodies, which is where Blobcast's roomId and the ecast create
+    # response live — past the URL-only redaction.
+    assert "--set flow_detail=1" in LAUNCHER.read_text()
 
 
 @pytest.mark.parametrize("variable", ["JBVIP_RELAY_URL", "JBVIP_RELAY_TOKEN"])

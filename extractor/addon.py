@@ -16,7 +16,7 @@ from extractor.roomcode import (
     code_from_blobcast_request,
     code_from_blobcast_socketio,
 )
-from extractor.relay_publisher import RelayPublisher
+from extractor.relay_publisher import LOG_MARKER, RelayPublisher
 from extractor.server import RoomCodeServer
 
 _JACKBOX = "jackboxgames.com"
@@ -154,21 +154,23 @@ def _build_sinks():
     token = os.environ.get("JBVIP_RELAY_TOKEN", "")
     if base_url and not token:
         logger.warning(
-            "JBVIP_RELAY_URL is set but JBVIP_RELAY_TOKEN is not; relay "
+            "%s JBVIP_RELAY_URL is set but JBVIP_RELAY_TOKEN is not; relay "
             "publishing is disabled and the room code stays LAN-only. Set both "
-            "in ~/.config/jbvip/relay.env."
+            "in ~/.config/jbvip/relay.env.",
+            LOG_MARKER,
         )
     elif token and not base_url:
         logger.warning(
-            "JBVIP_RELAY_TOKEN is set but JBVIP_RELAY_URL is not; relay "
+            "%s JBVIP_RELAY_TOKEN is set but JBVIP_RELAY_URL is not; relay "
             "publishing is disabled and the room code stays LAN-only. Set both "
-            "in ~/.config/jbvip/relay.env."
+            "in ~/.config/jbvip/relay.env.",
+            LOG_MARKER,
         )
     if base_url and token:
         try:
             sinks.append(RelayPublisher(base_url, token))
         except ValueError as exc:
-            logger.error("relay publishing disabled: %s", exc)
+            logger.error("%s publishing disabled: %s", LOG_MARKER, exc)
     return sinks
 
 

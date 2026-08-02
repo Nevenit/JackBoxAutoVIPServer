@@ -7,6 +7,7 @@ from mitmproxy.test import tflow, tutils
 
 from extractor import addon as addon_module
 from extractor.addon import RoomCodeExtractor
+from extractor.relay_publisher import LOG_MARKER
 from extractor.server import RoomCodeServer
 
 
@@ -375,6 +376,9 @@ def test_build_sinks_warns_when_only_the_relay_url_is_set(monkeypatch, caplog):
         sinks = addon_module._build_sinks()
     assert [type(s).__name__ for s in sinks] == ["RoomCodeServer"]
     assert "JBVIP_RELAY_TOKEN" in caplog.text
+    # jbvip-run.sh greps the proxy log for this to decide whether the run said
+    # anything worth keeping.
+    assert LOG_MARKER in caplog.text
 
 
 def test_build_sinks_warns_when_only_the_relay_token_is_set(monkeypatch, caplog):
@@ -384,6 +388,7 @@ def test_build_sinks_warns_when_only_the_relay_token_is_set(monkeypatch, caplog)
         sinks = addon_module._build_sinks()
     assert [type(s).__name__ for s in sinks] == ["RoomCodeServer"]
     assert "JBVIP_RELAY_URL" in caplog.text
+    assert LOG_MARKER in caplog.text
     assert "pub-token" not in caplog.text
 
 
