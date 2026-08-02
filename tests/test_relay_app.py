@@ -1,11 +1,15 @@
 import asyncio
 import contextlib
 import json
+import urllib.request
 
 import httpx
 import pytest
 import uvicorn
 
+import pair
+from extractor import relay_publisher
+from extractor.relay_publisher import RelayPublisher
 from relay.app import Relay, build_app
 from relay.state import RateLimiter, RelayState
 
@@ -328,3 +332,79 @@ async def test_anonymous_pair_spam_cannot_lock_out_minting(tmp_path):
         )
     assert exhausted.status_code == 429
     assert minted.status_code == 200
+
+
+# --- the client/server seam ---------------------------------------------
+# Everywhere else the publisher tests inject a fake `post` and the relay tests
+# post hand-built JSON, so the agreement between the two sides is asserted
+# twice on the same side of the wire, by tests that cannot disagree with each
+# other. A payload-key rename, a header change or a route change would pass the
+# whole suite. These run the real clients against the real app.
+#
+# Both clients refuse a non-https base URL — TLS is terminated in front of the
+# relay, so that check is the only place it can be enforced. The injection
+# points exist for tests; they downgrade the scheme and change nothing else, so
+# the real request building, the real headers and the real routes are exercised.
+# asyncio.to_thread keeps the blocking request off the loop, so the live server
+# can serve it.
+
+
+def downgrading_post(url, token, payload):
+    relay_publisher._urllib_post(url.replace("https://", "http://"), token, payload)
+
+
+def downgrading_opener(request, timeout=None):
+    downgraded = urllib.request.Request(
+        request.full_url.replace("https://", "http://"),
+        data=request.data,
+        headers=dict(request.header_items()),
+        method=request.get_method(),
+    )
+    return urllib.request.urlopen(downgraded, timeout=timeout)
+
+
+async def test_the_real_publisher_reaches_the_real_relay(tmp_path):
+    state, app = make(tmp_path)
+    async with serving(app) as http:
+        publisher = RelayPublisher(
+            f"https://127.0.0.1:{http.base_url.port}",
+            "pub",
+            post=downgrading_post,
+            now=lambda: 900.0,
+        )
+        await publisher.set_code("WEWW")
+
+    record = state.current_code()
+    assert record.code == "WEWW"
+    assert record.ts == 900.0  # the publisher's stamp survived the wire
+
+
+async def test_the_real_publisher_is_rejected_by_the_real_relay_without_the_token(
+    tmp_path,
+):
+    state, app = make(tmp_path)
+    async with serving(app) as http:
+        publisher = RelayPublisher(
+            f"https://127.0.0.1:{http.base_url.port}",
+            "not-the-publisher-token",
+            post=downgrading_post,
+            attempts=1,
+        )
+        await publisher.set_code("WEWW")
+
+    assert state.current_code() is None
+
+
+async def test_the_real_pair_cli_mints_a_code_the_relay_will_redeem(tmp_path):
+    state, app = make(tmp_path, subscribers=())
+    async with serving(app) as http:
+        pairing_code = await asyncio.to_thread(
+            pair.mint,
+            f"https://127.0.0.1:{http.base_url.port}",
+            "pub",
+            opener=downgrading_opener,
+        )
+        paired = await http.post("/pair", json={"pairing_code": pairing_code})
+
+    assert paired.status_code == 200
+    assert state.is_subscriber(paired.json()["subscriber_token"])
