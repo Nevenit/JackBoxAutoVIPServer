@@ -21,6 +21,9 @@ set -euo pipefail
 PORT="${JBVIP_PROXY_PORT:-8081}"
 REPO="$(dirname "$(readlink -f "$0")")"
 export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
+# Optional relay. Unset means LAN-only, which is the supported default.
+export JBVIP_RELAY_URL="${JBVIP_RELAY_URL:-}"
+export JBVIP_RELAY_TOKEN="${JBVIP_RELAY_TOKEN:-}"
 CGROUP=/sys/fs/cgroup/net_cls/jbvip
 
 # The transparent redirect must be active, or the game's traffic never reaches us.

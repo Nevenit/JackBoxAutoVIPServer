@@ -103,6 +103,34 @@ used) is required because the oldest packs open their room-code websocket as a
 raw TLS socket that ignores proxy settings — only a kernel-level redirect catches
 it, and unlike injecting a library into the game it doesn't crash the AIR runtime.
 
+## Reaching a Phone That Isn't on Your Wifi (optional)
+
+By default the room code is served only on your LAN, over TCP 38469. If you want
+a client to receive it from anywhere — a phone on cellular, or a friend's
+house — you can run the small relay in `relay/` on a VPS. The host pushes the
+code out over ordinary outbound HTTPS, so there is nothing to port-forward and
+nothing new listening on your machine.
+
+See `relay/README.md` for deployment. Once it is running, set two variables
+before launching a game:
+
+```bash
+export JBVIP_RELAY_URL=https://your-relay.example
+export JBVIP_RELAY_TOKEN=<the publisher token>
+```
+
+Then pair a client once:
+
+```bash
+python3 pair.py
+```
+
+That prints a relay host and a six-character pairing code to enter in the
+client. The pairing code is single-use and expires after five minutes.
+
+The relay is entirely optional. With these variables unset, everything works
+exactly as before, LAN-only.
+
 ## Uninstall
 
 With Steam closed, clear the launch options the installer added:
