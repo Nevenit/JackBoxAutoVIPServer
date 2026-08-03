@@ -14,13 +14,19 @@ if they were unknown, and so the next person can weigh them rather than guess.
 Both need a human at the machine with a real Jackbox game running; neither can be
 automated.
 
-1. **Live injection check.** `injection/inject.js` is proven against an offline Vue
-   fixture, which establishes the load-bearing fact — that setting a value plus
-   dispatching an `input` event moves a Vue `v-model`. It has never been run
-   against the real jackbox.tv join page. Selectors (`#roomcode`, `#username`,
-   `#button-join`) were read out of the shipped bundle on 2026-08-01 but not
-   exercised live. Also unanswered: whether the old Blobcast packs (Party Pack 1
-   and 5) present the same join screen.
+1. ~~**Live injection check.**~~ **DONE 2026-08-03.** `injection/inject.js` was run
+   against a real room (Party Pack 2 / Fibbage 2) in Firefox:
+   `await window.jbvipJoin('<CODE>', 'Michael')` returned `{ok: true}` and the
+   client joined — websocket `client/welcome` reported `id: 2`,
+   `roles.player.name: "MICHAEL"`, `playerIndex: 0`. The selectors and the Vue
+   `input`-event technique hold on the real page. A bogus code correctly returned
+   `{ok: false, reason: "join-button-never-enabled"}` (jackbox.tv 404s the room
+   lookup and leaves the button disabled), which also closed the fixture's
+   untested-branch gap below.
+
+   Still open within this: nobody has yet confirmed the **VIP marker** visually,
+   and Party Packs 1 and 5 have not been tried. See the protocol note below —
+   Pack 2 turned out to be on ecast, so it does not answer the Blobcast question.
 2. **Real-game end-to-end run.** A code has travelled from a real relay to a
    subscriber over real HTTP, and the extractor's own path is long-proven, but the
    two have never been joined up in one run with a real game.
@@ -44,6 +50,17 @@ de-duplication guard makes repeats cheap, but the raw count tells us whether the
   different code-bearing path segment — `/api/v2/audience/<CODE>/play`, say — would
   pass through unredacted. Not reachable today; the host game only uses `/rooms/`
   (`extractor/roomcode.py`). **Re-check this when adding support for any new pack.**
+
+## Protocol assumption corrected (2026-08-03)
+
+"Older pack" does **not** reliably mean Blobcast. Party Pack 2 (appid `397460`,
+Fibbage 2), a 2015 title, was observed running on **ecast**: player traffic goes to
+`ecast.jackboxgames.com/api/v2/rooms/<CODE>` and the websocket uses the modern
+protocol (`opcode: "client/welcome"`). Its entity keys still carry `bc:` prefixes
+(`bc:room`, `bc:customer:<uuid>`) — vestigial Blobcast naming over the newer
+transport, so **the `bc:` prefix is not a signal of which stack a pack uses**.
+Jackbox appears to have migrated at least some older packs since the June 2026
+protocol survey. Verify per pack rather than inferring from release year.
 - **The relay must run exactly one worker.** All state is per-process. Documented in
   `relay/README.md`; there is no code-level guard.
 
@@ -68,8 +85,9 @@ de-duplication guard makes repeats cheap, but the raw count tells us whether the
 ### Test coverage gaps, judged acceptable
 
 - The offline fixture never exercises `join-button-never-enabled` or the
-  `join-did-not-complete` fallback. Revisit alongside the live check — the former is
-  the branch most likely to fire in reality.
+  `join-did-not-complete` fallback. The former was **confirmed working live on
+  2026-08-03** by passing a nonexistent room code; only the
+  `join-did-not-complete` fallback remains unexercised.
 - The SSE keepalive branch is untested; doing so means a 20-second wait or injecting
   the constant.
 - `attempts <= 0` makes `RelayPublisher.set_code` a silent no-op. Unreachable —
