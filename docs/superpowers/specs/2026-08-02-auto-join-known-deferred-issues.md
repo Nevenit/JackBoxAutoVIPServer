@@ -24,13 +24,23 @@ automated.
    lookup and leaves the button disabled), which also closed the fixture's
    untested-branch gap below.
 
-   **VIP confirmed visually** by the user on the same run — the auto-joined
-   player held the VIP seat, which is the whole point of the project.
+   **Repeated successfully on three packs** (2026-08-03), each returning
+   `{ok: true}` against a live room:
 
-   Still open within this: Party Packs 1 and 5 have not been tried. See the
-   protocol note below — Pack 2 turned out to be on ecast, so it does **not**
-   answer the Blobcast question, which remains the one unknown that could still
-   change the Android app's design.
+   | Pack | Game | VIP evidence in the websocket |
+   |---|---|---|
+   | Party Pack 2 | Fibbage 2 | `playerIndex: 0`, confirmed visually |
+   | Party Pack 4 | Fibbage 3 | `isAllowedToStartGame: true` |
+   | Party Pack 9 | Fibbage 4 | **`vipName: "MICHAEL"`** |
+
+   Pack 9's `vipName` is the strongest evidence available — the game naming the
+   VIP holder in its own protocol, not an inference from player ordering.
+
+   **The Blobcast join question is moot for this library.** All three packs run on
+   ecast (see the protocol note below), and Packs 1 and 5 — the only ones ever
+   observed on Blobcast — have since been uninstalled. Nothing currently installed
+   can exercise a Blobcast join, so the Android app can be built against the single
+   ecast case. Revisit only if a Blobcast-era pack is reinstalled.
 2. **Real-game end-to-end run.** A code has travelled from a real relay to a
    subscriber over real HTTP, and the extractor's own path is long-proven, but the
    two have never been joined up in one run with a real game.
