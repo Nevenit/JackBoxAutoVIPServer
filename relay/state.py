@@ -1,5 +1,9 @@
 """Relay decisions with no HTTP and no disk, so they test as plain calls.
 
+A *session* is the unit of tenancy: one host PC's game night. It owns its own
+publisher and subscriber tokens and expires on its own, so two sessions can
+never see each other's codes.
+
 The room-code plausibility check duplicates `extractor.roomcode.looks_like_code`
 on purpose: the relay deploys to a VPS on its own and must not import the
 extractor package.
@@ -8,13 +12,18 @@ import math
 import secrets
 import time
 from dataclasses import dataclass
-from typing import Iterable
 
 FRESH_SECONDS = 120.0
-PAIRING_TTL_SECONDS = 300.0
-PAIRING_CODE_LENGTH = 6
-# No O/0 or I/1 — this gets read off a screen and typed on a phone.
-PAIRING_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+# Long enough not to cut a game night short, short enough that an abandoned
+# session and every credential it issued are gone by the next day.
+SESSION_IDLE_SECONDS = 4 * 3600
+MAX_SESSIONS = 500
+# A Jackbox room holds about ten players.
+MAX_SUBSCRIBERS_PER_SESSION = 16
+# 12 url-safe characters: short enough to sit in a QR code alongside a token,
+# and it is never a credential on its own.
+SESSION_ID_BYTES = 9
+TOKEN_BYTES = 32
 
 
 @dataclass(frozen=True)
@@ -33,6 +42,30 @@ class CodeRecord:
     received_at: float
 
 
+@dataclass
+class Session:
+    """One game night. Mutable: `last_activity` and `record` change over its life.
+
+    `session_id` is carried on the record so callers never have to pair it back
+    up with its key in the session table.
+    """
+
+    session_id: str
+    publisher_token: str
+    subscriber_token: str
+    created_at: float
+    last_activity: float
+    record: CodeRecord | None = None
+
+
+class SessionCapacityError(RuntimeError):
+    """Raised by create_session when MAX_SESSIONS live sessions already exist.
+
+    Deliberately not "evict the oldest": a live game night must never be ended
+    to admit a stranger (spec §8).
+    """
+
+
 def _looks_like_code(code) -> bool:
     return (
         isinstance(code, str)
@@ -40,6 +73,16 @@ def _looks_like_code(code) -> bool:
         and code.isascii()
         and code.isalnum()
     )
+
+
+def _token_matches(candidate, known: str) -> bool:
+    # Starlette decodes headers as latin-1 per the ASGI spec, so any byte >=
+    # 0x80 in an Authorization header arrives as a non-ASCII str — which
+    # secrets.compare_digest raises TypeError on. Unauthenticated callers must
+    # get a 401, not a traceback, so the ASCII check is part of the guard.
+    if not isinstance(candidate, str) or not candidate or not candidate.isascii():
+        return False
+    return secrets.compare_digest(candidate, known)
 
 
 class RateLimiter:
@@ -61,44 +104,75 @@ class RateLimiter:
 
 
 class RelayState:
-    def __init__(
-        self,
-        publisher_token: str,
-        subscriber_tokens: Iterable[str] = (),
-        now=time.time,
-    ):
-        if not publisher_token:
-            raise ValueError("publisher_token must not be empty")
-        self._publisher_token = publisher_token
-        self._subscriber_tokens: set[str] = set(subscriber_tokens)
+    """The session table. Everything the relay decides, and nothing it does."""
+
+    def __init__(self, now=time.time):
         self._now = now
-        self._record: CodeRecord | None = None
-        self._pairing_codes: dict[str, float] = {}
+        self._sessions: dict[str, Session] = {}
+
+    # --- lifecycle ---
+    def create_session(self) -> Session:
+        """Mint a session. Raises SessionCapacityError when full.
+
+        Does not evict internally: evicting a session means closing its live
+        SSE queues, which only the app layer can do. Callers run
+        `evict_expired()` first and close whatever it hands back.
+        """
+        if len(self._sessions) >= MAX_SESSIONS:
+            raise SessionCapacityError("session capacity reached")
+        now = self._now()
+        session = Session(
+            session_id=secrets.token_urlsafe(SESSION_ID_BYTES),
+            publisher_token=secrets.token_urlsafe(TOKEN_BYTES),
+            subscriber_token=secrets.token_urlsafe(TOKEN_BYTES),
+            created_at=now,
+            last_activity=now,
+        )
+        self._sessions[session.session_id] = session
+        return session
+
+    def session(self, session_id) -> Session | None:
+        if not isinstance(session_id, str):
+            return None
+        return self._sessions.get(session_id)
+
+    def delete_session(self, session_id) -> bool:
+        """Drop a session. True when there was one to drop."""
+        if not isinstance(session_id, str):
+            return False
+        return self._sessions.pop(session_id, None) is not None
+
+    def evict_expired(self) -> list[str]:
+        """Drop idle sessions and return their ids so their queues can be closed."""
+        cutoff = self._now() - SESSION_IDLE_SECONDS
+        dead = [
+            session_id
+            for session_id, session in self._sessions.items()
+            if session.last_activity <= cutoff
+        ]
+        for session_id in dead:
+            del self._sessions[session_id]
+        return dead
 
     # --- authentication ---
-    # Starlette decodes headers as latin-1 per the ASGI spec, so any byte >=
-    # 0x80 in an Authorization header arrives as a non-ASCII str — which
-    # secrets.compare_digest raises TypeError on. Unauthenticated callers must
-    # get a 401, not a traceback, so the ASCII check is part of the guard.
-    def is_publisher(self, token) -> bool:
-        if not isinstance(token, str) or not token or not token.isascii():
-            return False
-        return secrets.compare_digest(token, self._publisher_token)
+    def is_publisher(self, session_id, token) -> bool:
+        session = self.session(session_id)
+        return session is not None and _token_matches(token, session.publisher_token)
 
-    def is_subscriber(self, token) -> bool:
-        if not isinstance(token, str) or not token or not token.isascii():
-            return False
-        return any(
-            secrets.compare_digest(token, known) for known in self._subscriber_tokens
-        )
-
-    @property
-    def subscriber_tokens(self) -> set[str]:
-        return set(self._subscriber_tokens)
+    def is_subscriber(self, session_id, token) -> bool:
+        session = self.session(session_id)
+        return session is not None and _token_matches(token, session.subscriber_token)
 
     # --- room codes ---
-    def publish(self, code: str, ts: float) -> bool:
-        """Store the code. Returns True when this changed the current code."""
+    def publish(self, session_id, code, ts: float) -> bool:
+        """Store the code. Returns True when this changed the session's code.
+
+        Raises KeyError for an unknown session: callers authenticate first, and
+        authenticating already proves the session exists.
+        """
+        session = self.session(session_id)
+        if session is None:
+            raise KeyError(session_id)
         if not _looks_like_code(code):
             raise ValueError("implausible room code")
         ts = float(ts)
@@ -107,43 +181,32 @@ class RelayState:
         # as JSON no client can parse.
         if not math.isfinite(ts):
             raise ValueError("ts must be a finite number")
-        changed = self._record is None or self._record.code != code
-        self._record = CodeRecord(code=code, ts=ts, received_at=self._now())
+        now = self._now()
+        changed = session.record is None or session.record.code != code
+        session.record = CodeRecord(code=code, ts=ts, received_at=now)
+        session.last_activity = now
         return changed
 
-    def current_code(self) -> CodeRecord | None:
-        """The current code, or None when absent or older than the window.
+    def current_code(self, session_id) -> CodeRecord | None:
+        """The session's code, or None when absent or older than the window.
 
         Gated on the relay's own receipt time, never the publisher's stamp —
-        see CodeRecord. Spec §5.1 stores `{code, received_at}` for this reason.
+        see CodeRecord.
         """
-        if self._record is None:
+        session = self.session(session_id)
+        if session is None or session.record is None:
             return None
-        if self._now() - self._record.received_at > FRESH_SECONDS:
+        if self._now() - session.record.received_at > FRESH_SECONDS:
             return None
-        return self._record
+        return session.record
 
-    # --- pairing ---
-    def mint_pairing_code(self) -> str:
-        self._expire_pairing_codes()
-        code = "".join(
-            secrets.choice(PAIRING_ALPHABET) for _ in range(PAIRING_CODE_LENGTH)
-        )
-        self._pairing_codes[code] = self._now() + PAIRING_TTL_SECONDS
-        return code
+    # --- activity ---
+    def touch(self, session_id) -> None:
+        """Mark the session live. Subscribing counts as activity, not just publishing."""
+        session = self.session(session_id)
+        if session is not None:
+            session.last_activity = self._now()
 
-    def redeem_pairing_code(self, code: str) -> str | None:
-        """Burn a valid pairing code and return a fresh subscriber token."""
-        self._expire_pairing_codes()
-        if not isinstance(code, str) or code not in self._pairing_codes:
-            return None
-        del self._pairing_codes[code]
-        token = secrets.token_urlsafe(32)
-        self._subscriber_tokens.add(token)
-        return token
-
-    def _expire_pairing_codes(self) -> None:
-        now = self._now()
-        expired = [code for code, exp in self._pairing_codes.items() if exp <= now]
-        for code in expired:
-            del self._pairing_codes[code]
+    def expires_at(self, session_id) -> float | None:
+        session = self.session(session_id)
+        return None if session is None else session.last_activity + SESSION_IDLE_SECONDS
