@@ -24,9 +24,13 @@ automated.
    lookup and leaves the button disabled), which also closed the fixture's
    untested-branch gap below.
 
-   Still open within this: nobody has yet confirmed the **VIP marker** visually,
-   and Party Packs 1 and 5 have not been tried. See the protocol note below —
-   Pack 2 turned out to be on ecast, so it does not answer the Blobcast question.
+   **VIP confirmed visually** by the user on the same run — the auto-joined
+   player held the VIP seat, which is the whole point of the project.
+
+   Still open within this: Party Packs 1 and 5 have not been tried. See the
+   protocol note below — Pack 2 turned out to be on ecast, so it does **not**
+   answer the Blobcast question, which remains the one unknown that could still
+   change the Android app's design.
 2. **Real-game end-to-end run.** A code has travelled from a real relay to a
    subscriber over real HTTP, and the extractor's own path is long-proven, but the
    two have never been joined up in one run with a real game.
