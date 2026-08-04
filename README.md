@@ -37,9 +37,13 @@ updates — there is nothing per-game or per-version to maintain.
 - [mitmproxy](https://mitmproxy.org/) on your `PATH` — `pipx install mitmproxy`
 - `iptables` and a cgroup v1 `net_cls` hierarchy — used to redirect **only the
   game's** traffic to the proxy. Setting this up is one `sudo` command per session.
-- [`qrencode`](https://fukuchi.org/works/qrencode/) — only needed if you use the
-  relay (below); it renders the pairing QR code. Most distros package it
+- [`qrencode`](https://fukuchi.org/works/qrencode/) — only needed if you use
+  the relay (below); it renders the pairing QR code. Most distros package it
   (`qrencode` on Arch/Debian/Fedora).
+- Python's `tkinter` — also only needed for the relay; it draws the pairing
+  window itself. **Already included on Arch/CachyOS** (bundled with the
+  `python` package). Debian/Ubuntu need `python3-tk`; Fedora needs
+  `python3-tkinter`.
 
 ## Setup
 
