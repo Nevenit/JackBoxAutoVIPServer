@@ -2259,6 +2259,11 @@ def write_session_env(path, credentials: SessionCredentials) -> None:
         f"JBVIP_SESSION_TOKEN={shlex.quote(credentials.publisher_token)}\n"
     )
     handle = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    # The mode argument above applies only when the file is CREATED. A file
+    # already sitting at this path keeps its own mode under O_CREAT|O_TRUNC,
+    # which would leave the token world-readable. fchmod the descriptor, not
+    # the path, so there is no window to race.
+    os.fchmod(handle, 0o600)
     with os.fdopen(handle, "w") as file:
         file.write(text)
 
@@ -2334,6 +2339,11 @@ def main(argv=None) -> int:
 
     Reads the credentials from the environment rather than arguments, so the
     token never appears in a process listing.
+
+    Returns 0 for every documented invocation. `parse_args` still raises
+    SystemExit(2) on an unknown flag and that is left alone — the launcher's
+    invocation is a fixed string and is additionally guarded by `|| true`.
+    Do not subclass ArgumentParser to chase it.
     """
     parser = argparse.ArgumentParser(description="jbvip relay session helper")
     parser.add_argument(
@@ -2342,7 +2352,11 @@ def main(argv=None) -> int:
     )
     args = parser.parse_args(argv)
     if not args.delete:
-        parser.error("nothing to do; pass --delete")
+        # NOT parser.error(): that raises SystemExit(2) and never returns,
+        # which would break the "always 0" contract below from inside the
+        # launcher's EXIT trap.
+        print("jbvip: nothing to do; pass --delete", file=sys.stderr)
+        return 0
     credentials = credentials_from_env()
     if credentials is not None:
         delete_session(credentials)
