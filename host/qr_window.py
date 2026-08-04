@@ -128,11 +128,14 @@ def show(credentials, *, count=None, timeout=PAIRING_TIMEOUT_SECONDS) -> str:
 def main(argv=None) -> int:
     """`python3 -m host.qr_window --base-url <URL> --session-env <PATH>`.
 
-    Exits non-zero when the game will not have working relay credentials —
-    either the session could not be created, or it was created but its
-    credentials could not be handed to the launcher. Every other outcome
-    (paired, skipped, timed out, no display) exits 0: the session is live and
-    publishing will work, so the game should launch regardless.
+    Exits non-zero only when the game will not have working relay
+    credentials on disk: the session could not be created, or it was created
+    but write_session_env could not put its credentials where the launcher
+    reads them. Once those credentials are written, nothing that happens
+    next can turn the exit code non-zero again — paired, skipped, timed out,
+    no display, or the pairing window itself blowing up (a full /tmp, a
+    dead Tk) are all exit 0, because the session is live and publishing will
+    work regardless of whether anyone ever saw the QR code.
     """
     parser = argparse.ArgumentParser(
         description="Create a relay session and show its pairing QR code"
@@ -170,10 +173,14 @@ def main(argv=None) -> int:
 
     try:
         state = show(credentials)
-    except tk.TclError as exc:
-        # No display, or a Tk that will not start. The session is live and
-        # publishing will work, so this is not fatal.
-        print(f"jbvip: could not open the pairing window ({exc})", file=sys.stderr)
+    except Exception as exc:
+        # The credentials are already on disk, so the game will publish
+        # normally — only the pairing window failed. A cosmetic failure must
+        # never cost a game night, so this is exit 0, exactly like Skip or a
+        # timeout. tk.TclError is the expected case (no display), but
+        # TemporaryDirectory raises plain OSError on a full /tmp, and neither
+        # should reach the user as a traceback.
+        print(f"jbvip: could not show the pairing window ({exc})", file=sys.stderr)
         return 0
     if state != PairingWaiter.PAIRED:
         print(f"jbvip: no phone paired ({state}); starting anyway", file=sys.stderr)
