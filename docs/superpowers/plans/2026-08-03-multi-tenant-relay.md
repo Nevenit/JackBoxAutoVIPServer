@@ -1364,7 +1364,7 @@ async def test_the_relay_logs_neither_a_room_code_nor_a_token(caplog):
 
 > **If `test_the_subscriber_cap_refuses_the_seventeenth_phone` proves flaky**, it is connection-pool contention in the single shared `httpx.AsyncClient`, not a bug in the relay — give each subscriber its own client rather than raising the cap or deleting the test.
 
-> `test_publishing_to_a_session_that_expired_mid_game_is_a_404` as written actually asserts a 401, because deleting the session removes the tokens too, so authentication fails first. That is the real behaviour and the honest assertion — the name should be `..._is_unauthorized`. Rename it when writing it. The `KeyError` → 404 branch in `publish` is unreachable over HTTP and exists only as a guard; do not contort a test to reach it.
+> On `test_publishing_to_a_session_that_expired_mid_game_is_a_404`: the name and the assertion agree, and both are correct. `_refuse` checks existence before authorisation, so a deleted session answers 404 even though its tokens died with it. (An earlier draft of this plan returned 401 here and carried a note saying so; that note was stale and has been removed. The 404/401 split is deliberate — see `_refuse`'s docstring.) The `KeyError` → 404 branch inside `publish` is a separate guard for a session evicted during `await request.json()`; it is not reachable from a test and should not be contorted into one.
 
 - [ ] **Step 3: Run the tests to verify they fail**
 
