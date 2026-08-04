@@ -350,53 +350,61 @@ def test_constructing_with_no_sinks_is_refused():
         RoomCodeExtractor()
 
 
+RELAY_ENVIRONMENT = {
+    "JBVIP_RELAY_URL": "https://relay.example",
+    "JBVIP_SESSION_ID": "sess-1",
+    "JBVIP_SESSION_TOKEN": "pub-token",
+}
+
+
+def set_relay_env(monkeypatch, **overrides):
+    for name in RELAY_ENVIRONMENT:
+        monkeypatch.delenv(name, raising=False)
+    for name, value in {**RELAY_ENVIRONMENT, **overrides}.items():
+        if value is not None:
+            monkeypatch.setenv(name, value)
+
+
 def test_build_sinks_is_lan_only_without_relay_configuration(monkeypatch):
-    monkeypatch.delenv("JBVIP_RELAY_URL", raising=False)
-    monkeypatch.delenv("JBVIP_RELAY_TOKEN", raising=False)
+    set_relay_env(monkeypatch, **dict.fromkeys(RELAY_ENVIRONMENT))
     assert [type(s).__name__ for s in addon_module._build_sinks()] == [
         "RoomCodeServer"
     ]
 
 
-def test_build_sinks_adds_the_relay_when_configured(monkeypatch):
-    monkeypatch.setenv("JBVIP_RELAY_URL", "https://relay.example")
-    monkeypatch.setenv("JBVIP_RELAY_TOKEN", "pub-token")
+def test_build_sinks_adds_the_relay_when_all_three_are_set(monkeypatch):
+    set_relay_env(monkeypatch)
     assert [type(s).__name__ for s in addon_module._build_sinks()] == [
         "RoomCodeServer",
         "RelayPublisher",
     ]
 
 
-def test_build_sinks_warns_when_only_the_relay_url_is_set(monkeypatch, caplog):
-    # Half-configured is the easiest mistake to make and used to be completely
-    # silent: LAN-only with no error, no warning and no log line.
-    monkeypatch.setenv("JBVIP_RELAY_URL", "https://relay.example")
-    monkeypatch.delenv("JBVIP_RELAY_TOKEN", raising=False)
+@pytest.mark.parametrize("missing", list(RELAY_ENVIRONMENT))
+def test_build_sinks_names_what_is_missing_when_half_configured(
+    monkeypatch, caplog, missing
+):
+    # Half-configured is otherwise undiagnosable: the user gets a LAN-only
+    # setup and the only place it shows is the proxy log.
+    set_relay_env(monkeypatch, **{missing: None})
     with caplog.at_level("WARNING"):
         sinks = addon_module._build_sinks()
     assert [type(s).__name__ for s in sinks] == ["RoomCodeServer"]
-    assert "JBVIP_RELAY_TOKEN" in caplog.text
-    # jbvip-run.sh greps the proxy log for this to decide whether the run said
-    # anything worth keeping.
+    assert missing in caplog.text
     assert LOG_MARKER in caplog.text
 
 
-def test_build_sinks_warns_when_only_the_relay_token_is_set(monkeypatch, caplog):
-    monkeypatch.delenv("JBVIP_RELAY_URL", raising=False)
-    monkeypatch.setenv("JBVIP_RELAY_TOKEN", "pub-token")
+def test_build_sinks_never_logs_the_token(monkeypatch, caplog):
+    set_relay_env(monkeypatch, JBVIP_RELAY_URL=None)
     with caplog.at_level("WARNING"):
-        sinks = addon_module._build_sinks()
-    assert [type(s).__name__ for s in sinks] == ["RoomCodeServer"]
-    assert "JBVIP_RELAY_URL" in caplog.text
-    assert LOG_MARKER in caplog.text
+        addon_module._build_sinks()
     assert "pub-token" not in caplog.text
 
 
 def test_build_sinks_says_nothing_when_the_relay_is_simply_not_configured(
     monkeypatch, caplog
 ):
-    monkeypatch.delenv("JBVIP_RELAY_URL", raising=False)
-    monkeypatch.delenv("JBVIP_RELAY_TOKEN", raising=False)
+    set_relay_env(monkeypatch, **dict.fromkeys(RELAY_ENVIRONMENT))
     with caplog.at_level("WARNING"):
         addon_module._build_sinks()
     assert caplog.text == ""
@@ -404,9 +412,8 @@ def test_build_sinks_says_nothing_when_the_relay_is_simply_not_configured(
 
 def test_build_sinks_degrades_to_lan_only_on_a_malformed_relay_url(monkeypatch):
     # http:// is refused by RelayPublisher; losing the relay must never cost
-    # the LAN server, and must not raise out of addon import.
-    monkeypatch.setenv("JBVIP_RELAY_URL", "http://relay.example")
-    monkeypatch.setenv("JBVIP_RELAY_TOKEN", "pub-token")
+    # a game night.
+    set_relay_env(monkeypatch, JBVIP_RELAY_URL="http://relay.example")
     assert [type(s).__name__ for s in addon_module._build_sinks()] == [
         "RoomCodeServer"
     ]

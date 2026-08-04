@@ -590,3 +590,74 @@ async def test_the_relay_logs_neither_a_room_code_nor_a_token(caplog):
     assert "WEWW" not in caplog.text
     assert session["publisher_token"] not in caplog.text
     assert session["subscriber_token"] not in caplog.text
+
+
+# --- the client/server seam ---------------------------------------------
+# Everywhere else the publisher tests inject a fake `post` and the relay tests
+# post hand-built JSON, so the agreement between the two sides is asserted
+# twice on the same side of the wire, by tests that cannot disagree with each
+# other. A payload-key rename, a header change or a route change would pass
+# the whole suite. These run the real client against the real app. The scheme
+# downgrade is the only thing altered — RelayPublisher refuses a non-https
+# base URL, and that check is worth keeping honest.
+
+from extractor import relay_publisher
+from extractor.relay_publisher import LOG_MARKER, RelayPublisher
+
+
+def downgrading_post(url, token, payload):
+    relay_publisher._urllib_post(url.replace("https://", "http://"), token, payload)
+
+
+def real_publisher(http, session_id, token, **kwargs):
+    return RelayPublisher(
+        f"https://127.0.0.1:{http.base_url.port}",
+        session_id,
+        token,
+        post=downgrading_post,
+        **kwargs,
+    )
+
+
+async def test_the_real_publisher_reaches_the_real_relay():
+    state, app = make()
+    async with serving(app) as http:
+        session = await new_session(http)
+        publisher = real_publisher(
+            http, session["session_id"], session["publisher_token"], now=lambda: 900.0
+        )
+        await publisher.set_code("WEWW")
+    record = state.current_code(session["session_id"])
+    assert record.code == "WEWW"
+    assert record.ts == 900.0  # the publisher's stamp survived the wire
+
+
+async def test_the_real_publisher_cannot_reach_another_session():
+    state, app = make()
+    async with serving(app) as http:
+        a, b = await new_session(http), await new_session(http)
+        publisher = real_publisher(
+            http, a["session_id"], b["publisher_token"], attempts=1
+        )
+        await publisher.set_code("WEWW")
+    assert state.current_code(a["session_id"]) is None
+    assert state.current_code(b["session_id"]) is None
+
+
+async def test_the_real_publisher_latches_when_the_real_session_is_deleted(caplog):
+    # The whole 404 contract, end to end: a real HTTPError off a real socket.
+    _, app = make()
+    async with serving(app) as http:
+        session = await new_session(http)
+        publisher = real_publisher(
+            http, session["session_id"], session["publisher_token"]
+        )
+        await publisher.set_code("WEWW")
+        await http.delete(
+            f"/sessions/{session['session_id']}",
+            headers=auth(session["publisher_token"]),
+        )
+        with caplog.at_level("WARNING"):
+            await publisher.set_code("ZZZZ")
+            await publisher.set_code("YYYY")
+    assert caplog.text.count(LOG_MARKER) == 1

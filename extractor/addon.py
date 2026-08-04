@@ -142,33 +142,38 @@ class RoomCodeExtractor:
         self._broadcast(self.code_from_websocket_message(flow))
 
 
+RELAY_VARIABLES = ("JBVIP_RELAY_URL", "JBVIP_SESSION_ID", "JBVIP_SESSION_TOKEN")
+
+
 def _build_sinks():
-    """The LAN server always; the relay publisher when it is configured.
+    """The LAN server always; the relay publisher when it is fully configured.
 
     Half-configured is loud, because it is otherwise undiagnosable: the user
     gets a LAN-only setup and the only place this is visible is the proxy log.
-    Never logs the token's value.
+    jbvip-run.sh normally sets the session variables at launch. Never logs a
+    token's value.
     """
     sinks = [RoomCodeServer(port=38469)]
-    base_url = os.environ.get("JBVIP_RELAY_URL", "")
-    token = os.environ.get("JBVIP_RELAY_TOKEN", "")
-    if base_url and not token:
+    values = {name: os.environ.get(name, "") for name in RELAY_VARIABLES}
+    present = [name for name, value in values.items() if value]
+    missing = [name for name, value in values.items() if not value]
+    if present and missing:
         logger.warning(
-            "%s JBVIP_RELAY_URL is set but JBVIP_RELAY_TOKEN is not; relay "
-            "publishing is disabled and the room code stays LAN-only. Set both "
-            "in ~/.config/jbvip/relay.env.",
+            "%s relay publishing is disabled and the room code stays LAN-only: "
+            "%s is set but %s is not.",
             LOG_MARKER,
+            ", ".join(present),
+            ", ".join(missing),
         )
-    elif token and not base_url:
-        logger.warning(
-            "%s JBVIP_RELAY_TOKEN is set but JBVIP_RELAY_URL is not; relay "
-            "publishing is disabled and the room code stays LAN-only. Set both "
-            "in ~/.config/jbvip/relay.env.",
-            LOG_MARKER,
-        )
-    if base_url and token:
+    elif not missing:
         try:
-            sinks.append(RelayPublisher(base_url, token))
+            sinks.append(
+                RelayPublisher(
+                    values["JBVIP_RELAY_URL"],
+                    values["JBVIP_SESSION_ID"],
+                    values["JBVIP_SESSION_TOKEN"],
+                )
+            )
         except ValueError as exc:
             logger.error("%s publishing disabled: %s", LOG_MARKER, exc)
     return sinks
