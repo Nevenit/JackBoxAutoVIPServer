@@ -213,7 +213,7 @@ async def test_publishing_rejects_an_implausible_code():
     assert response.status_code == 400
 
 
-async def test_publishing_to_a_session_that_expired_mid_game_is_unauthorized():
+async def test_publishing_to_a_session_that_expired_mid_game_is_a_404():
     # The publisher latches on this and stops trying; the LAN server is
     # unaffected, so the game night carries on regardless.
     state, app = make()
