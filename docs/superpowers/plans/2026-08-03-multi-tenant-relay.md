@@ -1563,7 +1563,12 @@ class Relay:
         try:
             body = await request.json()
             code = body["code"]
-            ts = float(body.get("ts") or time.time())
+            # `is not None`, never `or`: 0.0 is falsy, and silently swapping
+            # an explicit epoch stamp for the relay's own clock would collapse
+            # the two-clock design — `ts` is the host's and travels to the
+            # phone for its independent freshness check.
+            raw_ts = body.get("ts")
+            ts = float(raw_ts) if raw_ts is not None else time.time()
         except (ValueError, TypeError, KeyError):
             return JSONResponse({"error": "bad request"}, status_code=400)
         try:
