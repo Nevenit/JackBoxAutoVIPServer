@@ -5,6 +5,7 @@ import pytest
 
 from relay.state import (
     MAX_SESSIONS,
+    MAX_SESSION_LIFETIME_SECONDS,
     RateLimiter,
     RelayState,
     Session,
@@ -218,10 +219,13 @@ def test_an_idle_session_is_evicted_and_its_id_returned():
 
 
 def test_a_session_kept_alive_by_a_subscriber_is_not_evicted():
+    # Well within MAX_SESSION_LIFETIME_SECONDS: this proves touching resets
+    # the *idle* clock. What happens once the absolute ceiling is reached
+    # despite continuous touching is a separate test, below.
     clock = Clock(1000.0)
     state = make(clock)
     session = state.create_session()
-    for _ in range(5):
+    for _ in range(2):
         clock.t += SESSION_IDLE_SECONDS - 1
         state.touch(session.session_id)
         assert state.evict_expired() == []
@@ -232,10 +236,84 @@ def test_eviction_takes_only_the_idle_session():
     clock = Clock(1000.0)
     state = make(clock)
     stale, live = state.create_session(), state.create_session()
-    clock.t += SESSION_IDLE_SECONDS + 1
+    # Touch `live` before it crosses its own idle deadline — touching after
+    # the fact must not be able to resurrect it; that is Finding 1's whole
+    # point, and is covered on its own above.
+    clock.t += SESSION_IDLE_SECONDS - 1
     state.touch(live.session_id)
+    clock.t += 2
     assert state.evict_expired() == [stale.session_id]
     assert state.session(live.session_id) is not None
+
+
+# --- Finding 1: expiry must be enforced on the read path, not just by reaping ---
+
+def test_an_idle_sessions_credentials_stop_authenticating_with_no_reaping():
+    # No call to evict_expired() anywhere in this test: the read path alone
+    # must refuse an idle session, or a quiet relay never enforces its own
+    # advertised lifetime.
+    clock = Clock(1000.0)
+    state = make(clock)
+    session = state.create_session()
+    clock.t = 1000.0 + SESSION_IDLE_SECONDS + 1
+    assert state.is_publisher(session.session_id, session.publisher_token) is False
+    assert state.is_subscriber(session.session_id, session.subscriber_token) is False
+    assert state.session(session.session_id) is None
+
+
+def test_current_code_refuses_an_expired_session():
+    clock = Clock(1000.0)
+    state = make(clock)
+    session = state.create_session()
+    state.publish(session.session_id, "WEWW", 1000.0)
+    clock.t = 1000.0 + SESSION_IDLE_SECONDS + 1
+    assert state.current_code(session.session_id) is None
+
+
+def test_publish_refuses_an_expired_session():
+    clock = Clock(1000.0)
+    state = make(clock)
+    session = state.create_session()
+    clock.t = 1000.0 + SESSION_IDLE_SECONDS + 1
+    with pytest.raises(KeyError):
+        state.publish(session.session_id, "WEWW", clock.t)
+
+
+# --- Finding 2: an absolute ceiling bounds a session no matter how often it
+# is touched, so a held stream cannot pin a slot forever ------------------
+
+def test_a_continuously_touched_session_still_expires_at_the_absolute_ceiling():
+    clock = Clock(1000.0)
+    state = make(clock)
+    session = state.create_session()
+    step = SESSION_IDLE_SECONDS - 1  # shorter than the idle window every time
+    elapsed = 0.0
+    while elapsed <= MAX_SESSION_LIFETIME_SECONDS:
+        clock.t += step
+        elapsed += step
+        state.touch(session.session_id)
+    # Continuous touching kept it alive against idle eviction the whole way,
+    # yet the absolute ceiling still ends it.
+    assert state.session(session.session_id) is None
+    assert state.is_publisher(session.session_id, session.publisher_token) is False
+
+
+# --- expires_at reports whichever deadline actually binds -----------------
+
+def test_expires_at_reflects_the_absolute_ceiling_once_it_binds():
+    # Touch often enough (each gap shorter than the idle window, so none of
+    # them is ever refused) that the idle deadline keeps moving out ahead of
+    # the absolute ceiling. Near the end of the session's life, expires_at
+    # must report the ceiling — that is the deadline that actually binds.
+    clock = Clock(1000.0)
+    state = make(clock)
+    session = state.create_session()
+    step = SESSION_IDLE_SECONDS - 1
+    ceiling = 1000.0 + MAX_SESSION_LIFETIME_SECONDS
+    while clock.t + step < ceiling:
+        clock.t += step
+        state.touch(session.session_id)
+    assert state.expires_at(session.session_id) == ceiling
 
 
 # --- capacity -----------------------------------------------------------

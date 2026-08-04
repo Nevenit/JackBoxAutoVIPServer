@@ -362,17 +362,28 @@ async def test_the_publisher_can_see_that_a_phone_arrived():
 async def test_polling_the_session_does_not_keep_it_alive():
     # Only publishing and subscribing count as activity. The QR window polls
     # this once a second and must not be able to extend a session by doing so.
+    # Poll repeatedly *within* the idle window (each poll must succeed, since
+    # the session is genuinely still alive), then cross the boundary the
+    # original deadline set and confirm the session expired on schedule
+    # anyway — proving the polling never pushed the deadline out. No other
+    # request in this test ever reaps or otherwise touches the session, so
+    # the final 404 comes from the read path alone.
     clock = Clock(1000.0)
     state, app = make(clock)
     async with serving(app) as http:
         session = await new_session(http)
-        clock.t += SESSION_IDLE_SECONDS + 1
-        info = await http.get(
-            f"/sessions/{session['session_id']}",
-            headers=auth(session["publisher_token"]),
-        )
-        assert info.status_code == 200
-    assert state.evict_expired() == [session["session_id"]]
+        info_url = f"/sessions/{session['session_id']}"
+        headers = auth(session["publisher_token"])
+
+        clock.t += SESSION_IDLE_SECONDS - 10
+        for _ in range(3):
+            polled = await http.get(info_url, headers=headers)
+            assert polled.status_code == 200
+
+        clock.t += 20  # now past the original SESSION_IDLE_SECONDS deadline
+        expired = await http.get(info_url, headers=headers)
+    assert expired.status_code == 404
+    assert state.session(session["session_id"]) is None
 
 
 async def test_expires_at_moves_forward_when_the_host_publishes():

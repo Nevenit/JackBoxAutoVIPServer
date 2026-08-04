@@ -17,6 +17,11 @@ FRESH_SECONDS = 120.0
 # Long enough not to cut a game night short, short enough that an abandoned
 # session and every credential it issued are gone by the next day.
 SESSION_IDLE_SECONDS = 4 * 3600
+# A session may be kept alive by activity, but not forever: a subscriber
+# holding a stream open touches it every keepalive, so without a ceiling one
+# client could pin a slot indefinitely and the relay would never recover its
+# capacity. Comfortably longer than any game night.
+MAX_SESSION_LIFETIME_SECONDS = 12 * 3600
 MAX_SESSIONS = 500
 # A Jackbox room holds about ten players.
 MAX_SUBSCRIBERS_PER_SESSION = 16
@@ -121,8 +126,15 @@ class RelayState:
         if len(self._sessions) >= MAX_SESSIONS:
             raise SessionCapacityError("session capacity reached")
         now = self._now()
+        # Astronomically unlikely at 72 bits of entropy with at most
+        # MAX_SESSIONS live sessions, but a collision would hand a brand new
+        # session's key to an old one's still-registered queues — the one
+        # remaining way session isolation could break. Cheap to close.
+        session_id = secrets.token_urlsafe(SESSION_ID_BYTES)
+        while session_id in self._sessions:
+            session_id = secrets.token_urlsafe(SESSION_ID_BYTES)
         session = Session(
-            session_id=secrets.token_urlsafe(SESSION_ID_BYTES),
+            session_id=session_id,
             publisher_token=secrets.token_urlsafe(TOKEN_BYTES),
             subscriber_token=secrets.token_urlsafe(TOKEN_BYTES),
             created_at=now,
@@ -131,10 +143,20 @@ class RelayState:
         self._sessions[session.session_id] = session
         return session
 
+    def _is_expired(self, session: Session) -> bool:
+        now = self._now()
+        return (
+            session.last_activity <= now - SESSION_IDLE_SECONDS
+            or session.created_at <= now - MAX_SESSION_LIFETIME_SECONDS
+        )
+
     def session(self, session_id) -> Session | None:
         if not isinstance(session_id, str):
             return None
-        return self._sessions.get(session_id)
+        session = self._sessions.get(session_id)
+        if session is None or self._is_expired(session):
+            return None
+        return session
 
     def delete_session(self, session_id) -> bool:
         """Drop a session. True when there was one to drop."""
@@ -143,12 +165,16 @@ class RelayState:
         return self._sessions.pop(session_id, None) is not None
 
     def evict_expired(self) -> list[str]:
-        """Drop idle sessions and return their ids so their queues can be closed."""
-        cutoff = self._now() - SESSION_IDLE_SECONDS
+        """Drop expired sessions and return their ids so their queues can be closed.
+
+        Uses the same _is_expired predicate as session(), so a record that
+        the read path has already started refusing can never linger here
+        indefinitely, and the two can never disagree about what is alive.
+        """
         dead = [
             session_id
             for session_id, session in self._sessions.items()
-            if session.last_activity <= cutoff
+            if self._is_expired(session)
         ]
         for session_id in dead:
             del self._sessions[session_id]
@@ -208,5 +234,17 @@ class RelayState:
             session.last_activity = self._now()
 
     def expires_at(self, session_id) -> float | None:
+        """The deadline after which the session dies "unless something happens".
+
+        The earlier of the two: usually the idle deadline, but late in a
+        session kept alive by a held subscribe stream the absolute ceiling
+        becomes the one that actually binds, and callers (the QR window, the
+        API response) should see whichever one will really end the session.
+        """
         session = self.session(session_id)
-        return None if session is None else session.last_activity + SESSION_IDLE_SECONDS
+        if session is None:
+            return None
+        return min(
+            session.last_activity + SESSION_IDLE_SECONDS,
+            session.created_at + MAX_SESSION_LIFETIME_SECONDS,
+        )
