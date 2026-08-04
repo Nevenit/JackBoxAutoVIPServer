@@ -131,6 +131,10 @@ def write_session_env(path, credentials: SessionCredentials) -> None:
         f"JBVIP_SESSION_TOKEN={shlex.quote(credentials.publisher_token)}\n"
     )
     handle = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    # The mode argument above applies only on creation. fchmod the descriptor
+    # so a pre-existing file cannot leave the token world-readable, and do it
+    # on the fd rather than the path so there is no window to race.
+    os.fchmod(handle, 0o600)
     with os.fdopen(handle, "w") as file:
         file.write(text)
 
@@ -206,6 +210,15 @@ def main(argv=None) -> int:
 
     Reads the credentials from the environment rather than arguments, so the
     token never appears in a process listing.
+
+    Every *documented* invocation returns 0, including bare `--delete` with
+    nothing to delete: this runs inside the launcher's EXIT trap, where a
+    non-zero status would change the exit code the game reported to Steam.
+    That contract does not reach an *undocumented* flag — argparse's own
+    `parse_args` still raises `SystemExit(2)` on one, and preventing that
+    would mean subclassing `ArgumentParser` for no real benefit. The
+    launcher's invocation is a fixed string, additionally guarded by
+    `|| true`, so that path is never actually hit.
     """
     parser = argparse.ArgumentParser(description="jbvip relay session helper")
     parser.add_argument(
@@ -214,7 +227,8 @@ def main(argv=None) -> int:
     )
     args = parser.parse_args(argv)
     if not args.delete:
-        parser.error("nothing to do; pass --delete")
+        print("jbvip: nothing to do; pass --delete", file=sys.stderr)
+        return 0
     credentials = credentials_from_env()
     if credentials is not None:
         delete_session(credentials)

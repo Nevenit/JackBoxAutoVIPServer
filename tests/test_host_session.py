@@ -14,6 +14,7 @@ from host.session import (
     create_session,
     credentials_from_env,
     delete_session,
+    main,
     qr_payload,
     subscriber_count,
     write_session_env,
@@ -161,6 +162,16 @@ def test_the_session_env_file_is_only_readable_by_its_owner(tmp_path):
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
+def test_the_session_env_file_is_tightened_even_if_it_already_exists(tmp_path):
+    # O_CREAT's mode argument applies only on creation, so a file left behind
+    # at a wider mode would otherwise keep it and leak the token.
+    path = tmp_path / "session.env"
+    path.write_text("stale\n")
+    path.chmod(0o644)
+    write_session_env(path, CREDENTIALS)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
 def test_the_session_env_file_is_sourceable_by_sh(tmp_path):
     path = tmp_path / "session.env"
     write_session_env(path, CREDENTIALS)
@@ -205,6 +216,46 @@ def test_credentials_from_a_half_set_environment_are_none(missing):
     }
     del environ[missing]
     assert credentials_from_env(environ) is None
+
+
+# --- main() ---------------------------------------------------------------
+# main() runs inside the launcher's EXIT trap, so a non-zero return would
+# change the exit code the game reports to Steam. Every documented
+# invocation must return 0, never raise.
+
+
+def test_main_with_no_flags_returns_zero_rather_than_raising():
+    # argparse's own parser.error() raises SystemExit, which main() must not
+    # let escape for its own "nothing to do" case.
+    assert main([]) == 0
+
+
+def test_main_delete_with_no_credentials_in_environment_attempts_no_request(
+    monkeypatch,
+):
+    for var in ("JBVIP_RELAY_URL", "JBVIP_SESSION_ID", "JBVIP_SESSION_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
+
+    def unexpected_urlopen(*args, **kwargs):
+        raise AssertionError("no credentials means no request should be attempted")
+
+    monkeypatch.setattr(host_session.urllib.request, "urlopen", unexpected_urlopen)
+    assert main(["--delete"]) == 0
+
+
+def test_main_delete_returns_zero_even_when_the_delete_fails(monkeypatch):
+    monkeypatch.setenv("JBVIP_RELAY_URL", "https://relay.example")
+    monkeypatch.setenv("JBVIP_SESSION_ID", "sess-1")
+    monkeypatch.setenv("JBVIP_SESSION_TOKEN", "pub-token")
+    attempted = []
+
+    def failing_urlopen(*args, **kwargs):
+        attempted.append(1)
+        raise urllib.error.URLError("relay down")
+
+    monkeypatch.setattr(host_session.urllib.request, "urlopen", failing_urlopen)
+    assert main(["--delete"]) == 0
+    assert attempted == [1]
 
 
 # --- PairingWaiter ------------------------------------------------------
