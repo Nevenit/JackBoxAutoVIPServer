@@ -37,6 +37,9 @@ updates — there is nothing per-game or per-version to maintain.
 - [mitmproxy](https://mitmproxy.org/) on your `PATH` — `pipx install mitmproxy`
 - `iptables` and a cgroup v1 `net_cls` hierarchy — used to redirect **only the
   game's** traffic to the proxy. Setting this up is one `sudo` command per session.
+- [`qrencode`](https://fukuchi.org/works/qrencode/) — only needed if you use the
+  relay (below); it renders the pairing QR code. Most distros package it
+  (`qrencode` on Arch/Debian/Fedora).
 
 ## Setup
 
@@ -118,7 +121,6 @@ See `relay/README.md` for deployment. Once it is running, create
 mkdir -p ~/.config/jbvip
 cat > ~/.config/jbvip/relay.env <<'EOF'
 JBVIP_RELAY_URL=https://your-relay.example
-JBVIP_RELAY_TOKEN=<the publisher token>
 EOF
 chmod 600 ~/.config/jbvip/relay.env
 ```
@@ -127,15 +129,19 @@ A file rather than `export` because Steam launches the game with the environment
 the Steam client itself started with, so variables exported in a terminal never
 reach it.
 
-`pair.py` reads the same two variables, so load them into your shell first:
+**There is no token to configure any more.** Every credential is minted fresh
+at launch: `jbvip-run.sh` creates a *session* on the relay the moment it starts
+(before the game itself launches), and that session — and everything it can
+do — is deleted again when the game exits. Nothing about the relay is
+long-lived on this machine.
 
-```bash
-set -a; . ~/.config/jbvip/relay.env; set +a
-python3 pair.py
-```
-
-That prints a relay host and a six-character pairing code to enter in the
-client. The pairing code is single-use and expires after five minutes.
+Concretely, once `JBVIP_RELAY_URL` is configured, every launch shows a small
+QR-code window before the game starts. Scan it with a phone to pair it with
+that game night; the window closes on its own the moment a phone connects, or
+you can press **Skip** to start the game without one, or just wait — it gives
+up after 120 seconds and the game launches regardless. A dead or unreachable
+relay is handled the same way: the game **always** launches — LAN-only if the
+relay could not be reached, reachable from any phone that paired if it could.
 
 If the relay does not seem to be working, launch a game once and then look at
 `~/.local/state/jbvip/last-run.log`. The launcher keeps the proxy log there —

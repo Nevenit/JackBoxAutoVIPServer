@@ -23,13 +23,14 @@ REPO="$(dirname "$(readlink -f "$0")")"
 export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
 # Optional relay config. Steam launch options inherit the Steam client's
 # environment, not a shell's, so a terminal `export` would never reach us.
+# Only a URL now — every credential is minted per session at launch and dies
+# with it, so there is no pre-shared secret on this machine any more.
 RELAY_ENV="${XDG_CONFIG_HOME:-$HOME/.config}/jbvip/relay.env"
 # shellcheck source=/dev/null
 [ -r "$RELAY_ENV" ] && . "$RELAY_ENV"
 # Normalise unset to empty so `set -u` stays safe, and so a run invoked directly
-# from a shell (rather than by Steam) still honours real environment variables.
-export JBVIP_RELAY_URL="${JBVIP_RELAY_URL:-}"
-export JBVIP_RELAY_TOKEN="${JBVIP_RELAY_TOKEN:-}"
+# from a shell (rather than by Steam) still honours a real environment variable.
+JBVIP_RELAY_URL="${JBVIP_RELAY_URL:-}"
 CGROUP=/sys/fs/cgroup/net_cls/jbvip
 
 # The transparent redirect must be active, or the game's traffic never reaches us.
@@ -66,6 +67,14 @@ REDACT_CODES='s#(/rooms/)[A-Za-z0-9]+#\1<redacted>#g'
 MITM=""
 
 cleanup() {
+  # Free the session immediately rather than waiting four hours for it to
+  # expire. `${SESSION_ID:-}` because the trap can fire before that line ran.
+  if [ -n "${SESSION_ID:-}" ]; then
+    JBVIP_RELAY_URL="$JBVIP_RELAY_URL" \
+    JBVIP_SESSION_ID="$SESSION_ID" \
+    JBVIP_SESSION_TOKEN="$SESSION_TOKEN" \
+      python3 -m host.session --delete >/dev/null 2>&1 || true
+  fi
   if [ -f "$STATE/mitm.log" ] && grep -qF "$LOG_MARKER" "$STATE/mitm.log"; then
     if mkdir -p "$(dirname "$LAST_LOG")" 2>/dev/null &&
        sed -E "$REDACT_CODES" "$STATE/mitm.log" >"$LAST_LOG" 2>/dev/null; then
@@ -79,6 +88,31 @@ cleanup() {
   rm -rf "$STATE"
 }
 trap cleanup EXIT INT TERM
+
+# --- pair a phone, if a relay is configured ---------------------------------
+# Deliberately before mitmdump and the game: fighting a fullscreen game for
+# stacking order under Wayland is unreliable, and there is a natural gap here.
+# Not exported — see the mitmdump line below.
+SESSION_ID=""
+SESSION_TOKEN=""
+SESSION_ENV="$STATE/session.env"
+if [ -n "$JBVIP_RELAY_URL" ]; then
+  # The `if` matters: this exits non-zero when the relay is unreachable, and
+  # under `set -e` a bare call would end the script and the game would never
+  # launch. A dead VPS must never cost a game night.
+  if python3 -m host.qr_window --base-url "$JBVIP_RELAY_URL" \
+       --session-env "$SESSION_ENV"; then
+    if [ -r "$SESSION_ENV" ]; then
+      # shellcheck source=/dev/null
+      . "$SESSION_ENV"
+      SESSION_ID="${JBVIP_SESSION_ID:-}"
+      SESSION_TOKEN="${JBVIP_SESSION_TOKEN:-}"
+      unset JBVIP_SESSION_ID JBVIP_SESSION_TOKEN
+    fi
+  else
+    echo "jbvip: no relay session; the room code stays LAN-only" >&2
+  fi
+fi
 
 # The CA file the game's statically-linked libcurl reads (it ignores SSL_CERT_FILE).
 SYS_CA=""
@@ -110,6 +144,9 @@ fi
 # mitmproxy/tools/main.py: opts.set(..., defer=True) precedes load_paths(),
 # process_options() follows it.) This project guarantees ~/.mitmproxy exists,
 # because the CA lives there. Do not "simplify" this back to --set.
+JBVIP_RELAY_URL="$JBVIP_RELAY_URL" \
+JBVIP_SESSION_ID="$SESSION_ID" \
+JBVIP_SESSION_TOKEN="$SESSION_TOKEN" \
 mitmdump --mode transparent --listen-port "$PORT" --flow-detail 1 \
   -s "$REPO/extractor/addon.py" \
   >"$STATE/mitm.log" 2>&1 &

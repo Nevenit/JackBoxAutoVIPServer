@@ -6,7 +6,7 @@ exported in a terminal therefore never reaches jbvip-run.sh, which is why the
 relay is configured through a file instead.
 
 These tests run the real config block out of the real script, so the file path
-and the export behaviour are pinned to what jbvip-run.sh actually does.
+and the sourcing behaviour are pinned to what jbvip-run.sh actually does.
 """
 import shlex
 import shutil
@@ -24,7 +24,7 @@ LAUNCHER = REPO / "jbvip-run.sh"
 README = REPO / "README.md"
 
 _BLOCK_START = "RELAY_ENV="
-_BLOCK_END = "export JBVIP_RELAY_TOKEN="
+_BLOCK_END = 'JBVIP_RELAY_URL="${JBVIP_RELAY_URL:-}"'
 
 
 def relay_config_block() -> str:
@@ -36,61 +36,56 @@ def relay_config_block() -> str:
     return "\n".join(lines[starts[0]: ends[0] + 1])
 
 
-def run_block(home: Path, env=None) -> dict:
-    """Run the block under the launcher's own shell options, in a child env."""
+def run_block(home: Path, env=None) -> str:
+    """Run the block under the launcher's own shell options and report the URL."""
     script = (
         "set -euo pipefail\n"
         + relay_config_block()
-        + "\n"
-        # A child process, so this proves the values were *exported*, not just
-        # assigned in the launcher's own shell.
-        + 'bash -c \'printf "%s\\n%s\\n" "${JBVIP_RELAY_URL-UNSET}" '
-        '"${JBVIP_RELAY_TOKEN-UNSET}"\'\n'
+        + '\nprintf "%s\\n" "${JBVIP_RELAY_URL-UNSET}"\n'
     )
     child_env = {"HOME": str(home), "PATH": "/usr/bin:/bin"}
     child_env.update(env or {})
     done = subprocess.run(
-        ["bash", "-c", script],
-        capture_output=True,
-        text=True,
-        env=child_env,
-        cwd=str(REPO),
+        ["bash", "-c", script], capture_output=True, text=True,
+        env=child_env, cwd=str(REPO),
     )
     assert done.returncode == 0, done.stderr
-    url, token = done.stdout.splitlines()[:2]
-    return {"url": url, "token": token}
+    return done.stdout.splitlines()[0]
 
 
-def test_the_launcher_reads_relay_config_from_the_config_file(tmp_path):
+def test_the_launcher_reads_the_relay_url_from_the_config_file(tmp_path):
     config = tmp_path / ".config" / "jbvip"
     config.mkdir(parents=True)
-    (config / "relay.env").write_text(
-        "JBVIP_RELAY_URL=https://sourced.example\n"
-        "JBVIP_RELAY_TOKEN=sourced-token\n"
-    )
-    assert run_block(tmp_path) == {
-        "url": "https://sourced.example",
-        "token": "sourced-token",
-    }
+    (config / "relay.env").write_text("JBVIP_RELAY_URL=https://sourced.example\n")
+    assert run_block(tmp_path) == "https://sourced.example"
 
 
 def test_the_config_file_honours_xdg_config_home(tmp_path):
     config = tmp_path / "xdg" / "jbvip"
     config.mkdir(parents=True)
     (config / "relay.env").write_text("JBVIP_RELAY_URL=https://xdg.example\n")
-    result = run_block(tmp_path, env={"XDG_CONFIG_HOME": str(tmp_path / "xdg")})
-    assert result["url"] == "https://xdg.example"
+    assert run_block(
+        tmp_path, env={"XDG_CONFIG_HOME": str(tmp_path / "xdg")}
+    ) == "https://xdg.example"
 
 
-def test_a_missing_config_file_leaves_both_variables_empty(tmp_path):
+def test_a_missing_config_file_leaves_the_url_empty(tmp_path):
     # Empty rather than unset: jbvip-run.sh runs under `set -u`.
-    assert run_block(tmp_path) == {"url": "", "token": ""}
+    assert run_block(tmp_path) == ""
 
 
 def test_a_real_environment_variable_still_works_without_a_config_file(tmp_path):
     # A directly-invoked run (not via Steam) can still be configured by export.
-    result = run_block(tmp_path, env={"JBVIP_RELAY_URL": "https://env.example"})
-    assert result["url"] == "https://env.example"
+    assert run_block(
+        tmp_path, env={"JBVIP_RELAY_URL": "https://env.example"}
+    ) == "https://env.example"
+
+
+def test_the_config_file_no_longer_carries_a_pre_shared_secret():
+    # Every credential is now minted per session at launch and dies with it.
+    text = LAUNCHER.read_text()
+    assert "JBVIP_RELAY_TOKEN" not in text
+    assert "JBVIP_PUBLISHER_TOKEN" not in text
 
 
 _CLEANUP_START = "LAST_LOG="
@@ -194,13 +189,17 @@ def test_the_shell_and_the_addon_agree_on_the_log_marker():
     assert f'LOG_MARKER="{LOG_MARKER}"' in LAUNCHER.read_text()
 
 
+def mitmdump_line() -> str:
+    """The launcher's real mitmdump invocation, line continuations joined."""
+    text = LAUNCHER.read_text().replace("\\\n", " ")
+    return next(
+        one for one in text.splitlines() if "mitmdump --mode transparent" in one
+    )
+
+
 def mitmdump_flow_detail_args() -> list[str]:
     """The flow-detail arguments jbvip-run.sh actually passes to mitmdump."""
-    text = LAUNCHER.read_text().replace("\\\n", " ")
-    line = next(
-        one for one in text.splitlines() if one.strip().startswith("mitmdump ")
-    )
-    tokens = shlex.split(line.split(">", 1)[0])  # drop the output redirection
+    tokens = shlex.split(mitmdump_line().split(">", 1)[0])  # drop the redirection
     args: list[str] = []
     for index, token in enumerate(tokens):
         if token == "--flow-detail" or (
@@ -259,7 +258,37 @@ def test_the_launcher_pins_flow_detail_against_a_user_config_file():
     assert "OBSERVED flow_detail=1" in done.stdout, done.stdout + done.stderr
 
 
-@pytest.mark.parametrize("variable", ["JBVIP_RELAY_URL", "JBVIP_RELAY_TOKEN"])
+def test_the_session_credentials_reach_mitmdump_but_not_the_game():
+    # bwrap runs proprietary third-party game code. It has no business
+    # holding a token that can publish to the relay session.
+    line = mitmdump_line()
+    for name in ("JBVIP_RELAY_URL", "JBVIP_SESSION_ID", "JBVIP_SESSION_TOKEN"):
+        assert f"{name}=" in line
+    text = LAUNCHER.read_text()
+    assert "export JBVIP_SESSION_TOKEN" not in text
+    assert "export JBVIP_SESSION_ID" not in text
+
+
+def test_a_relay_that_cannot_be_reached_does_not_abort_the_launch():
+    # set -e plus a bare `python3 -m host.qr_window` would end the script on a
+    # dead VPS and the game would never start. It has to be an if-condition.
+    text = LAUNCHER.read_text().replace("\\\n", " ")
+    launch = next(
+        one for one in text.splitlines() if "host.qr_window" in one
+    )
+    assert launch.strip().startswith("if "), launch
+
+
+def test_the_launcher_deletes_its_session_on_the_way_out():
+    text = LAUNCHER.read_text()
+    assert "host.session --delete" in text
+    # Before $STATE is removed, and never allowed to fail the trap.
+    cleanup = text[text.index("cleanup() {"):text.index("trap cleanup")]
+    assert cleanup.index("host.session --delete") < cleanup.index('rm -rf "$STATE"')
+    assert "|| true" in cleanup
+
+
+@pytest.mark.parametrize("variable", ["JBVIP_RELAY_URL"])
 def test_the_readme_does_not_tell_the_user_to_export_the_relay_variables(variable):
     # The documented procedure was the bug: an export in a terminal cannot reach
     # a Steam launch option. The README must document the file instead.
