@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import time
 
 import pytest
 
@@ -183,6 +184,41 @@ async def test_publishing_stores_the_code_against_that_session():
         )
     assert response.status_code == 204
     assert state.current_code(session["session_id"]).code == "WEWW"
+
+
+async def test_an_explicit_epoch_timestamp_is_not_silently_replaced():
+    # 0.0 is falsy, so a `or time.time()` default would discard it. `ts` is
+    # the host's clock and travels to the phone for its own freshness check;
+    # the relay overwriting it would collapse the two-clock design.
+    state, app = make()
+    async with serving(app) as http:
+        session = await new_session(http)
+        response = await http.post(
+            publish_url(session),
+            json={"code": "WEWW", "ts": 0.0},
+            headers=auth(session["publisher_token"]),
+        )
+    assert response.status_code == 204
+    assert state.current_code(session["session_id"]).ts == 0.0
+
+
+async def test_publishing_without_a_ts_defaults_to_now():
+    # ts is optional in the request body; when absent it should fall back to
+    # the relay's own wall clock, distinct from an explicit 0.0 above, which
+    # must survive untouched.
+    state, app = make()
+    async with serving(app) as http:
+        session = await new_session(http)
+        before = time.time()
+        response = await http.post(
+            publish_url(session),
+            json={"code": "WEWW"},
+            headers=auth(session["publisher_token"]),
+        )
+        after = time.time()
+    assert response.status_code == 204
+    record_ts = state.current_code(session["session_id"]).ts
+    assert before <= record_ts <= after
 
 
 async def test_publishing_rejects_a_non_finite_timestamp():

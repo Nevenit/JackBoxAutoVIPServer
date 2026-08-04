@@ -187,7 +187,8 @@ class Relay:
         try:
             body = await request.json()
             code = body["code"]
-            ts = float(body.get("ts") or time.time())
+            raw_ts = body.get("ts")
+            ts = float(raw_ts) if raw_ts is not None else time.time()
         except (ValueError, TypeError, KeyError):
             return JSONResponse({"error": "bad request"}, status_code=400)
         try:
