@@ -2407,7 +2407,7 @@ Spec §5.4. Thin Tk glue over Task 3 and the one piece with no automated test �
 
 **Interfaces:**
 - Consumes, from Task 3: `SessionCredentials`, `create_session`, `qr_payload`, `subscriber_count`, `write_session_env`, `PairingWaiter`, `PAIRING_TIMEOUT_SECONDS`, `POLL_SECONDS`.
-- Produces, for Task 6: the CLI `python3 -m host.qr_window --base-url <URL> --session-env <PATH>`, exiting **0** when a session exists (paired, skipped or timed out — all fine, the game should launch) and **non-zero only when the session could not be created**.
+- Produces, for Task 6: the CLI `python3 -m host.qr_window --base-url <URL> --session-env <PATH>`, exiting **non-zero when the game cannot be given working relay credentials** — the session could not be created, or it could not be handed over — and **0** for every other outcome (paired, skipped, timed out, or no display available), because the session exists and publishing will work, so the game must launch. When the hand-over fails, the session is deleted rather than left to idle out.
 
 - [ ] **Step 1: Write `host/qr_window.py`**
 
@@ -2558,7 +2558,21 @@ def main(argv=None) -> int:
             file=sys.stderr,
         )
         return 1
-    write_session_env(args.session_env, credentials)
+    try:
+        write_session_env(args.session_env, credentials)
+    except OSError as exc:
+        # The session is live but the game will never see its credentials, so
+        # it would sit on the relay until it idled out. Give it back rather
+        # than leak a slot for four hours. OSError and not Exception: every
+        # plausible environmental failure here is one, and anything else is a
+        # bug of ours that should surface loudly.
+        delete_session(credentials)
+        print(
+            f"jbvip: could not write {args.session_env} ({exc}); "
+            "the game will run LAN-only",
+            file=sys.stderr,
+        )
+        return 1
 
     try:
         state = show(credentials)
