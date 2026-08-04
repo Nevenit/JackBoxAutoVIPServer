@@ -140,12 +140,15 @@ do — is deleted again when the game exits. Nothing about the relay is
 long-lived on this machine.
 
 Concretely, once `JBVIP_RELAY_URL` is configured, every launch shows a small
-QR-code window before the game starts. Scan it with a phone to pair it with
-that game night; the window closes on its own the moment a phone connects, or
-you can press **Skip** to start the game without one, or just wait — it gives
-up after 120 seconds and the game launches regardless. A dead or unreachable
-relay is handled the same way: the game **always** launches — LAN-only if the
-relay could not be reached, reachable from any phone that paired if it could.
+QR-code window before the game starts, meant to be scanned to pair a phone
+with that game night. **The phone app that does the pairing does not exist
+yet.** Scanning the QR with an ordinary camera app just opens a web page
+telling you to open it in the jbvip app, which does not subscribe — so today
+the window can never close itself. Either press **Skip** to close it at once
+and launch the game LAN-only, or leave it, and after 120 seconds it gives up
+and launches the game the same way. A dead or unreachable relay is handled
+identically: the game **always** launches — LAN-only if the relay could not
+be reached, reachable from any phone that paired if it could.
 
 If the relay does not seem to be working, launch a game once and then look at
 `~/.local/state/jbvip/last-run.log`. The launcher keeps the proxy log there —

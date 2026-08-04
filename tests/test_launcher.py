@@ -102,8 +102,9 @@ def cleanup_block() -> str:
 
 
 RELAY_WARNING = (
-    f"[19:26:21.486] {LOG_MARKER} JBVIP_RELAY_URL is set but "
-    "JBVIP_RELAY_TOKEN is not; relay publishing is disabled.\n"
+    f"[19:26:21.486] {LOG_MARKER} relay publishing is disabled and the room "
+    "code stays LAN-only: JBVIP_RELAY_URL is set but JBVIP_SESSION_ID, "
+    "JBVIP_SESSION_TOKEN is not.\n"
 )
 # Real mitmdump flow_detail=1 output. The play URL carries the room code, and
 # websocket_message echoes request.path once per frame.
