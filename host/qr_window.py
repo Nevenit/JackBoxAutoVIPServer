@@ -21,6 +21,7 @@ from host.session import (
     POLL_SECONDS,
     PairingWaiter,
     create_session,
+    delete_session,
     qr_payload,
     subscriber_count,
     write_session_env,
@@ -125,6 +126,14 @@ def show(credentials, *, count=None, timeout=PAIRING_TIMEOUT_SECONDS) -> str:
 
 
 def main(argv=None) -> int:
+    """`python3 -m host.qr_window --base-url <URL> --session-env <PATH>`.
+
+    Exits non-zero when the game will not have working relay credentials —
+    either the session could not be created, or it was created but its
+    credentials could not be handed to the launcher. Every other outcome
+    (paired, skipped, timed out, no display) exits 0: the session is live and
+    publishing will work, so the game should launch regardless.
+    """
     parser = argparse.ArgumentParser(
         description="Create a relay session and show its pairing QR code"
     )
@@ -144,7 +153,20 @@ def main(argv=None) -> int:
             file=sys.stderr,
         )
         return 1
-    write_session_env(args.session_env, credentials)
+
+    try:
+        write_session_env(args.session_env, credentials)
+    except OSError as exc:
+        # The session is live but the game will never see its credentials, so
+        # it would sit on the relay until it idled out. Give it back rather
+        # than leak a slot for four hours.
+        delete_session(credentials)
+        print(
+            f"jbvip: could not write {args.session_env} ({exc}); "
+            "the game will run LAN-only",
+            file=sys.stderr,
+        )
+        return 1
 
     try:
         state = show(credentials)
