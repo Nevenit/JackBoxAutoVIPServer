@@ -169,10 +169,11 @@ def main(argv=None) -> int:
         write_session_env(args.session_env, night.credentials)
     except OSError as exc:
         # A session minted just now is live but the game will never see its
-        # credentials, so it would sit on the relay until it idled out. Give
-        # it back rather than leak a slot for four hours. A reused one is
-        # tonight's: phones may be following it, and the night file still
-        # names it, so it stays.
+        # credentials, so it would hold a slot on the relay until it had gone
+        # 2 hours without a room (the relay's ROOMLESS_SECONDS). Give it back
+        # now; the night file still names it, so a later launch's check gets
+        # a 404 and replaces it. A reused one is tonight's: phones may be
+        # following it, and the night file still names it, so it stays.
         if night.created:
             delete_session(night.credentials)
         print(

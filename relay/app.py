@@ -138,10 +138,10 @@ class Relay:
     def _over_budget(self, session_id):
         """None while the publisher is within budget, else the 429 to return.
 
-        Charges one request to the session's budget. There is one budget for
-        everything the publisher token does, so publishing and clearing draw on
-        the same limiter. Run it after _refuse, never before: junk credentials
-        must not be able to spend a real host's budget.
+        Charges one request to the session's budget, which publishing and
+        clearing share; reading or deleting the session is not charged. Run it
+        after _refuse, never before: junk credentials must not be able to spend
+        a real host's budget.
         """
         if session_id not in self._publish_limiters:
             self._publish_limiters[session_id] = self._new_publish_limiter()

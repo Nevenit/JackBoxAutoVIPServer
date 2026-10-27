@@ -60,9 +60,9 @@ REPO="$(dirname "$(readlink -f "$0")")"
 export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
 # Optional relay config. Steam launch options inherit the Steam client's
 # environment, not a shell's, so a terminal `export` would never reach us.
-# Only a URL (and the proxy port, below) now — every credential is minted per
-# session at launch and dies with it, so there is no pre-shared secret on this
-# machine any more.
+# Only a URL (and the proxy port, below) now: the relay mints every credential,
+# and tonight's session is kept for the night in night.json (NIGHT_FILE, below),
+# so there is no pre-shared secret on this machine any more.
 RELAY_ENV="${XDG_CONFIG_HOME:-$HOME/.config}/jbvip/relay.env"
 # A typo in a hand-edited file must not cost a game night: on the left of ||,
 # set -e is off for the file's lines, so a bad line or a syntax error only warns.

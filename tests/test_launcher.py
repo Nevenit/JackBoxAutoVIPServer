@@ -108,7 +108,7 @@ def test_a_typo_in_the_config_file_does_not_stop_the_launch(tmp_path, contents):
 
 
 def test_the_config_file_no_longer_carries_a_pre_shared_secret():
-    # Every credential is now minted per session at launch and dies with it.
+    # The relay mints every credential; tonight's are kept in night.json.
     text = LAUNCHER.read_text()
     assert "JBVIP_RELAY_TOKEN" not in text
     assert "JBVIP_PUBLISHER_TOKEN" not in text

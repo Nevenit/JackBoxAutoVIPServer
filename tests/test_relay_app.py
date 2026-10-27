@@ -375,8 +375,8 @@ async def test_clearing_needs_the_publisher_token():
 
 
 async def test_clearing_is_charged_to_the_sessions_publish_budget():
-    # One budget for everything the publisher token can do. A clear with its
-    # own (or no) limiter would be a way round the per-session limit.
+    # Publishing and clearing share one budget. A clear with its own (or no)
+    # limiter would be a way round the per-session limit.
     _, app = make(
         publish_limiter_factory=lambda: RateLimiter(limit=1, window_seconds=60.0)
     )
