@@ -132,6 +132,20 @@ class Relay:
             return JSONResponse(_UNAUTHORIZED, status_code=401)
         return None
 
+    def _over_budget(self, session_id):
+        """None while the publisher is within budget, else the 429 to return.
+
+        Charges one request to the session's budget. There is one budget for
+        everything the publisher token does, so publishing and clearing draw on
+        the same limiter. Run it after _refuse, never before: junk credentials
+        must not be able to spend a real host's budget.
+        """
+        if session_id not in self._publish_limiters:
+            self._publish_limiters[session_id] = self._new_publish_limiter()
+        if self._publish_limiters[session_id].allow():
+            return None
+        return JSONResponse({"error": "rate limited"}, status_code=429)
+
     async def create_session(self, request):
         if not self._create_limiter.allow():
             return JSONResponse({"error": "rate limited"}, status_code=429)
@@ -181,11 +195,9 @@ class Relay:
         refusal = self._refuse(request, session_id)
         if refusal is not None:
             return refusal
-        limiter = self._publish_limiters.setdefault(
-            session_id, self._new_publish_limiter()
-        )
-        if not limiter.allow():
-            return JSONResponse({"error": "rate limited"}, status_code=429)
+        throttled = self._over_budget(session_id)
+        if throttled is not None:
+            return throttled
         try:
             body = await request.json()
             code = body["code"]
@@ -213,12 +225,9 @@ class Relay:
         refusal = self._refuse(request, session_id)
         if refusal is not None:
             return refusal
-        # One budget for everything the publisher token does, as in publish.
-        limiter = self._publish_limiters.setdefault(
-            session_id, self._new_publish_limiter()
-        )
-        if not limiter.allow():
-            return JSONResponse({"error": "rate limited"}, status_code=429)
+        throttled = self._over_budget(session_id)
+        if throttled is not None:
+            return throttled
         try:
             cleared = self.state.clear_code(session_id)
         except KeyError:
