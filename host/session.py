@@ -109,33 +109,34 @@ def subscriber_count(credentials: SessionCredentials, *, call=_urllib_call) -> i
     return int(body["subscribers"])
 
 
-def delete_session(credentials: SessionCredentials, *, call=_urllib_call) -> bool:
-    """Free the session's capacity. Never raises: this runs on an exit path."""
+def _delete(credentials: SessionCredentials, suffix: str, call) -> bool:
+    """DELETE under the session with the publisher token. Never raises.
+
+    Every caller is tidying up on an exit or failure path, where raising
+    helps nobody.
+    """
     try:
         call(
-            f"{credentials.base_url}/sessions/{credentials.session_id}",
+            f"{credentials.base_url}/sessions/{credentials.session_id}{suffix}",
             "DELETE",
             credentials.publisher_token,
         )
     except Exception:
         return False
     return True
+
+
+def delete_session(credentials: SessionCredentials, *, call=_urllib_call) -> bool:
+    """Free the session's capacity. Never raises."""
+    return _delete(credentials, "", call)
 
 
 def clear_room(credentials: SessionCredentials, *, call=_urllib_call) -> bool:
     """Tell the phones this pack is over, keeping the night's session.
 
-    Never raises: this runs on the launcher's exit path, like delete_session.
+    Never raises, like delete_session.
     """
-    try:
-        call(
-            f"{credentials.base_url}/sessions/{credentials.session_id}/code",
-            "DELETE",
-            credentials.publisher_token,
-        )
-    except Exception:
-        return False
-    return True
+    return _delete(credentials, "/code", call)
 
 
 def _write_private(path, text: str) -> None:
