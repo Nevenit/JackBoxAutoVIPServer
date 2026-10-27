@@ -13,7 +13,6 @@ import secrets
 import time
 from dataclasses import dataclass
 
-FRESH_SECONDS = 120.0
 # Long enough not to cut a game night short, short enough that an abandoned
 # session and every credential it issued are gone by the next day.
 SESSION_IDLE_SECONDS = 4 * 3600
@@ -22,6 +21,12 @@ SESSION_IDLE_SECONDS = 4 * 3600
 # client could pin a slot indefinitely and the relay would never recover its
 # capacity. Comfortably longer than any game night.
 MAX_SESSION_LIFETIME_SECONDS = 12 * 3600
+# How long a session may sit without a room (cleared, or never given one)
+# before the night counts as over. Measured from the clear or from creation,
+# never from activity: a phone listening to the empty session touches it on
+# every keepalive, and that must not keep a finished night alive until the
+# lifetime ceiling.
+ROOMLESS_SECONDS = 2 * 3600
 MAX_SESSIONS = 500
 # A Jackbox room holds about ten players.
 MAX_SUBSCRIBERS_PER_SESSION = 16
@@ -33,26 +38,29 @@ TOKEN_BYTES = 32
 
 @dataclass(frozen=True)
 class CodeRecord:
-    """A published code and the two clocks that saw it.
+    """A published code and the stamp the host gave it.
 
-    `ts` is when the host PC observed the code; it travels to clients, which
-    run their own end-to-end freshness check against it. `received_at` is the
-    relay's own clock and is what the freshness window here uses, so skew on
-    the host's clock — a dual-boot PC with Windows writing localtime to the RTC
-    is hours out — cannot make every code look stale or every code look fresh.
+    `ts` is when the host PC observed the code; it is passed through to clients
+    unchanged. Nothing on the relay gates on age any more: a code stays current
+    until the host publishes another or clears it.
     """
 
     code: str
     ts: float
-    received_at: float
 
 
 @dataclass
 class Session:
-    """One game night. Mutable: `last_activity` and `record` change over its life.
+    """One game night. Mutable: `last_activity`, `record` and `roomless_since`
+    change over its life.
 
     `session_id` is carried on the record so callers never have to pair it back
     up with its key in the session table.
+
+    `roomless_since` is when the session last had no room: its creation until
+    the first publish, None while a code is published, then the moment of a
+    clear that removed one. Only those events move it, never activity. It has
+    no default so that a session can't be built without saying which it is.
     """
 
     session_id: str
@@ -60,6 +68,7 @@ class Session:
     subscriber_token: str
     created_at: float
     last_activity: float
+    roomless_since: float | None
     record: CodeRecord | None = None
 
 
@@ -139,6 +148,7 @@ class RelayState:
             subscriber_token=secrets.token_urlsafe(TOKEN_BYTES),
             created_at=now,
             last_activity=now,
+            roomless_since=now,
         )
         self._sessions[session.session_id] = session
         return session
@@ -148,6 +158,10 @@ class RelayState:
         return (
             session.last_activity <= now - SESSION_IDLE_SECONDS
             or session.created_at <= now - MAX_SESSION_LIFETIME_SECONDS
+            or (
+                session.roomless_since is not None
+                and session.roomless_since <= now - ROOMLESS_SECONDS
+            )
         )
 
     def session(self, session_id) -> Session | None:
@@ -202,29 +216,46 @@ class RelayState:
         if not _looks_like_code(code):
             raise ValueError("implausible room code")
         ts = float(ts)
-        # json.loads accepts a bare NaN and `now - nan > window` is False, so a
-        # NaN stamp would be permanently fresh and json.dumps would re-emit it
-        # as JSON no client can parse.
+        # json.loads accepts a bare NaN, and json.dumps would re-emit it as
+        # JSON no client can parse.
         if not math.isfinite(ts):
             raise ValueError("ts must be a finite number")
         now = self._now()
         changed = session.record is None or session.record.code != code
-        session.record = CodeRecord(code=code, ts=ts, received_at=now)
+        session.record = CodeRecord(code=code, ts=ts)
+        session.roomless_since = None
         session.last_activity = now
         return changed
 
-    def current_code(self, session_id) -> CodeRecord | None:
-        """The session's code, or None when absent or older than the window.
+    def clear_code(self, session_id) -> bool:
+        """Forget the session's code: the host has no room right now.
 
-        Gated on the relay's own receipt time, never the publisher's stamp —
-        see CodeRecord.
+        Returns True when this removed a code. A clear with nothing to remove
+        changes nothing, so a launcher that clears on every exit cannot push a
+        roomless session's deadline out. Raises KeyError for an unknown
+        session, like publish.
         """
         session = self.session(session_id)
-        if session is None or session.record is None:
-            return None
-        if self._now() - session.record.received_at > FRESH_SECONDS:
-            return None
-        return session.record
+        if session is None:
+            raise KeyError(session_id)
+        if session.record is None:
+            return False
+        now = self._now()
+        session.record = None
+        session.roomless_since = now
+        session.last_activity = now
+        return True
+
+    def current_code(self, session_id) -> CodeRecord | None:
+        """The session's code, or None when there is no such session or it has
+        no room right now.
+
+        Served at any age. A code stays current until the host replaces or
+        clears it, and the launcher clears it when its pack exits, so an old
+        code is one whose pack is still running.
+        """
+        session = self.session(session_id)
+        return None if session is None else session.record
 
     # --- activity ---
     def touch(self, session_id) -> None:
@@ -236,15 +267,20 @@ class RelayState:
     def expires_at(self, session_id) -> float | None:
         """The deadline after which the session dies "unless something happens".
 
-        The earlier of the two: usually the idle deadline, but late in a
-        session kept alive by a held subscribe stream the absolute ceiling
-        becomes the one that actually binds, and callers (the QR window, the
-        API response) should see whichever one will really end the session.
+        The earliest of three: the idle deadline, the absolute ceiling and,
+        while the session has no room, the roomless deadline. Usually it is
+        the idle one, but late in a session kept alive by a held subscribe
+        stream the ceiling binds, and a session with no room dies at the
+        roomless deadline however often it is touched. Callers (the QR window,
+        the API response) should see whichever one will really end the session.
         """
         session = self.session(session_id)
         if session is None:
             return None
-        return min(
+        deadlines = [
             session.last_activity + SESSION_IDLE_SECONDS,
             session.created_at + MAX_SESSION_LIFETIME_SECONDS,
-        )
+        ]
+        if session.roomless_since is not None:
+            deadlines.append(session.roomless_since + ROOMLESS_SECONDS)
+        return min(deadlines)

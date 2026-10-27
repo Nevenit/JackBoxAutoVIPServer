@@ -8,6 +8,7 @@ from relay.state import (
     MAX_SESSION_LIFETIME_SECONDS,
     RateLimiter,
     RelayState,
+    ROOMLESS_SECONDS,
     Session,
     SessionCapacityError,
     SESSION_IDLE_SECONDS,
@@ -139,39 +140,56 @@ def test_an_implausible_code_is_refused(code):
 
 @pytest.mark.parametrize("ts", [math.nan, math.inf, -math.inf])
 def test_a_non_finite_timestamp_is_refused(ts):
-    # json.loads accepts a bare NaN, `now - nan > window` is False, so a NaN
-    # stamp would be permanently fresh and json.dumps would re-emit it as
-    # JSON no client can parse.
+    # json.loads accepts a bare NaN, and json.dumps would re-emit it as JSON
+    # no client can parse.
     state = make()
     session = state.create_session()
     with pytest.raises(ValueError):
         state.publish(session.session_id, "WEWW", ts)
 
 
-# --- freshness ----------------------------------------------------------
+# --- the current code ---------------------------------------------------
 
-def test_a_code_older_than_the_window_is_withheld():
+def test_a_code_is_served_however_old_it_is():
     clock = Clock(1000.0)
     state = make(clock)
     session = state.create_session()
     state.publish(session.session_id, "WEWW", 1000.0)
-    clock.t = 1000.0 + 121.0
-    assert state.current_code(session.session_id) is None
+    clock.t = 1000.0 + 3 * 3600
+    assert state.current_code(session.session_id).code == "WEWW"
 
 
-def test_freshness_uses_the_relays_clock_not_the_publishers_stamp():
-    # A dual-boot host writing localtime to the RTC is hours out. Its stamp
-    # must not be able to make a code look permanently fresh or permanently
-    # stale — only the relay's own receipt time counts.
-    clock = Clock(1000.0)
-    state = make(clock)
+def test_the_hosts_stamp_travels_to_clients_unchanged():
+    state = make()
     session = state.create_session()
     state.publish(session.session_id, "WEWW", 500_000.0)
-    record = state.current_code(session.session_id)
-    assert record.ts == 500_000.0       # the host's stamp travels to clients
-    assert record.received_at == 1000.0  # the relay's clock gates freshness
-    clock.t = 1121.0
+    assert state.current_code(session.session_id).ts == 500_000.0
+
+
+def test_clearing_removes_the_current_code_and_reports_it():
+    state = make()
+    session = state.create_session()
+    state.publish(session.session_id, "WEWW", 1000.0)
+    assert state.clear_code(session.session_id) is True
     assert state.current_code(session.session_id) is None
+
+
+def test_clearing_with_no_code_reports_no_change():
+    state = make()
+    assert state.clear_code(state.create_session().session_id) is False
+
+
+def test_clearing_an_unknown_session_raises_key_error():
+    with pytest.raises(KeyError):
+        make().clear_code("nope")
+
+
+def test_the_same_code_after_a_clear_counts_as_a_change():
+    state = make()
+    session = state.create_session()
+    state.publish(session.session_id, "WEWW", 1000.0)
+    state.clear_code(session.session_id)
+    assert state.publish(session.session_id, "WEWW", 1001.0) is True
 
 
 def test_the_current_code_of_an_unknown_session_is_none():
@@ -179,6 +197,9 @@ def test_the_current_code_of_an_unknown_session_is_none():
 
 
 # --- activity and expiry ------------------------------------------------
+# A session with no room ends at ROOMLESS_SECONDS, so the tests below that are
+# about the idle and lifetime rules publish a code first. Without one, the
+# roomless rule would end their sessions before those rules could.
 
 def test_publishing_extends_the_session():
     clock = Clock(1000.0)
@@ -188,6 +209,16 @@ def test_publishing_extends_the_session():
     state.publish(session.session_id, "WEWW", 2000.0)
     assert session.last_activity == 2000.0
     assert state.expires_at(session.session_id) == 2000.0 + SESSION_IDLE_SECONDS
+
+
+def test_clearing_extends_the_session():
+    clock = Clock(1000.0)
+    state = make(clock)
+    session = state.create_session()
+    state.publish(session.session_id, "WEWW", 1000.0)
+    clock.t = 2000.0
+    state.clear_code(session.session_id)
+    assert session.last_activity == 2000.0
 
 
 def test_touching_extends_the_session():
@@ -213,6 +244,7 @@ def test_an_idle_session_is_evicted_and_its_id_returned():
     clock = Clock(1000.0)
     state = make(clock)
     session = state.create_session()
+    state.publish(session.session_id, "WEWW", 1000.0)
     clock.t = 1000.0 + SESSION_IDLE_SECONDS + 1
     assert state.evict_expired() == [session.session_id]
     assert state.session(session.session_id) is None
@@ -225,6 +257,7 @@ def test_a_session_kept_alive_by_a_subscriber_is_not_evicted():
     clock = Clock(1000.0)
     state = make(clock)
     session = state.create_session()
+    state.publish(session.session_id, "WEWW", 1000.0)
     for _ in range(2):
         clock.t += SESSION_IDLE_SECONDS - 1
         state.touch(session.session_id)
@@ -236,6 +269,8 @@ def test_eviction_takes_only_the_idle_session():
     clock = Clock(1000.0)
     state = make(clock)
     stale, live = state.create_session(), state.create_session()
+    state.publish(stale.session_id, "WEWW", 1000.0)
+    state.publish(live.session_id, "WEWW", 1000.0)
     # Touch `live` before it crosses its own idle deadline — touching after
     # the fact must not be able to resurrect it; that is Finding 1's whole
     # point, and is covered on its own above.
@@ -255,6 +290,7 @@ def test_an_idle_sessions_credentials_stop_authenticating_with_no_reaping():
     clock = Clock(1000.0)
     state = make(clock)
     session = state.create_session()
+    state.publish(session.session_id, "WEWW", 1000.0)
     clock.t = 1000.0 + SESSION_IDLE_SECONDS + 1
     assert state.is_publisher(session.session_id, session.publisher_token) is False
     assert state.is_subscriber(session.session_id, session.subscriber_token) is False
@@ -274,6 +310,7 @@ def test_publish_refuses_an_expired_session():
     clock = Clock(1000.0)
     state = make(clock)
     session = state.create_session()
+    state.publish(session.session_id, "WEWW", 1000.0)
     clock.t = 1000.0 + SESSION_IDLE_SECONDS + 1
     with pytest.raises(KeyError):
         state.publish(session.session_id, "WEWW", clock.t)
@@ -286,6 +323,7 @@ def test_a_continuously_touched_session_still_expires_at_the_absolute_ceiling():
     clock = Clock(1000.0)
     state = make(clock)
     session = state.create_session()
+    state.publish(session.session_id, "WEWW", 1000.0)
     step = SESSION_IDLE_SECONDS - 1  # shorter than the idle window every time
     elapsed = 0.0
     while elapsed <= MAX_SESSION_LIFETIME_SECONDS:
@@ -308,12 +346,65 @@ def test_expires_at_reflects_the_absolute_ceiling_once_it_binds():
     clock = Clock(1000.0)
     state = make(clock)
     session = state.create_session()
+    state.publish(session.session_id, "WEWW", 1000.0)
     step = SESSION_IDLE_SECONDS - 1
     ceiling = 1000.0 + MAX_SESSION_LIFETIME_SECONDS
     while clock.t + step < ceiling:
         clock.t += step
         state.touch(session.session_id)
     assert state.expires_at(session.session_id) == ceiling
+
+
+def test_expires_at_reports_the_roomless_deadline_when_it_binds_first():
+    clock = Clock(1000.0)
+    state = make(clock)
+    session = state.create_session()
+    assert state.expires_at(session.session_id) == 1000.0 + ROOMLESS_SECONDS
+
+
+# --- a night with no room ends, however many phones are listening ---------
+
+def test_a_roomless_session_ends_after_the_window_even_while_touched():
+    clock = Clock(1000.0)
+    state = make(clock)
+    session = state.create_session()
+    state.publish(session.session_id, "WEWW", 1000.0)
+    clock.t = 2000.0
+    state.clear_code(session.session_id)
+    clock.t = 2000.0 + ROOMLESS_SECONDS - 1
+    state.touch(session.session_id)
+    assert state.session(session.session_id) is not None
+    clock.t = 2000.0 + ROOMLESS_SECONDS
+    assert state.session(session.session_id) is None
+
+
+def test_a_session_that_never_got_a_room_ends_after_the_window():
+    clock = Clock(1000.0)
+    state = make(clock)
+    session = state.create_session()
+    clock.t = 1000.0 + ROOMLESS_SECONDS
+    assert state.session(session.session_id) is None
+
+
+def test_a_session_with_a_room_outlives_the_roomless_window():
+    clock = Clock(1000.0)
+    state = make(clock)
+    session = state.create_session()
+    state.publish(session.session_id, "WEWW", 1000.0)
+    clock.t = 1000.0 + ROOMLESS_SECONDS + 60
+    assert state.session(session.session_id) is not None
+
+
+def test_a_clear_that_removed_nothing_changes_nothing():
+    # A launcher that clears on every exit must not be able to keep a session
+    # that never got a room alive by doing so.
+    clock = Clock(1000.0)
+    state = make(clock)
+    session = state.create_session()
+    clock.t = 2000.0
+    assert state.clear_code(session.session_id) is False
+    assert session.last_activity == 1000.0
+    assert state.expires_at(session.session_id) == 1000.0 + ROOMLESS_SECONDS
 
 
 # --- capacity -----------------------------------------------------------

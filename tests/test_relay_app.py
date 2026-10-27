@@ -10,6 +10,7 @@ from relay.state import (
     MAX_SUBSCRIBERS_PER_SESSION,
     RateLimiter,
     RelayState,
+    ROOMLESS_SECONDS,
     SESSION_IDLE_SECONDS,
 )
 from tests.helpers import Clock, auth, first_event, new_session, serving, stream_ends
@@ -69,7 +70,7 @@ async def test_creating_a_session_returns_an_id_and_two_tokens():
         "session_id", "publisher_token", "subscriber_token", "expires_at"
     }
     assert body["publisher_token"] != body["subscriber_token"]
-    assert body["expires_at"] == 1000.0 + SESSION_IDLE_SECONDS
+    assert body["expires_at"] == 1000.0 + ROOMLESS_SECONDS
 
 
 async def test_creating_a_session_needs_no_credential():
@@ -292,22 +293,6 @@ async def test_a_subscriber_receives_the_current_code_on_connect():
             assert await first_event(response) == {"code": "WEWW", "ts": 1000.0}
 
 
-async def test_a_subscriber_is_not_sent_a_stale_code_on_connect():
-    # Jackbox recycles four-letter codes; a stale one may belong to a
-    # stranger's room by the next day.
-    clock = Clock(1000.0)
-    state, app = make(clock)
-    async with serving(app) as http:
-        session = await new_session(http)
-        state.publish(session["session_id"], "WEWW", 1000.0)
-        clock.t = 2000.0
-        async with http.stream(
-            "GET", subscribe_url(session), headers=auth(session["subscriber_token"])
-        ) as response:
-            with pytest.raises(asyncio.TimeoutError):
-                await first_event(response, timeout=0.5)
-
-
 async def test_a_subscriber_receives_a_code_published_after_connecting():
     _, app = make()
     async with serving(app) as http:
@@ -372,6 +357,8 @@ async def test_polling_the_session_does_not_keep_it_alive():
     state, app = make(clock)
     async with serving(app) as http:
         session = await new_session(http)
+        # A room, so the idle rule, not the roomless one, is what expires it.
+        state.publish(session["session_id"], "WEWW", 1000.0)
         info_url = f"/sessions/{session['session_id']}"
         headers = auth(session["publisher_token"])
 
@@ -401,7 +388,9 @@ async def test_expires_at_moves_forward_when_the_host_publishes():
             f"/sessions/{session['session_id']}",
             headers=auth(session["publisher_token"]),
         )
-    assert info.json()["expires_at"] == session["expires_at"] + 60.0
+    # Publishing ends the roomless deadline, so the idle one, measured from
+    # the publish, is what remains.
+    assert info.json()["expires_at"] == 1060.0 + SESSION_IDLE_SECONDS
 
 
 # --- expiry and deletion ------------------------------------------------
@@ -433,9 +422,11 @@ async def test_evicting_an_idle_session_ends_its_stream():
     # The real keepalive is 20s, so none fires during this test and nothing
     # touches the session behind the test's back.
     clock = Clock(1000.0)
-    _, app = make(clock)
+    state, app = make(clock)
     async with serving(app) as http:
         session = await new_session(http)
+        # A room, so the idle rule, not the roomless one, is what evicts it.
+        state.publish(session["session_id"], "WEWW", 1000.0)
         async with http.stream(
             "GET", subscribe_url(session), headers=auth(session["subscriber_token"])
         ) as response:
