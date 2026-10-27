@@ -103,3 +103,18 @@ def test_jackbox_app_ids_filters_by_name(tmp_path):
     )
     ids = jackbox_app_ids([lib])
     assert ids == {"1": "The Jackbox Party Pack 9"}
+
+
+def test_jackbox_app_ids_never_includes_the_megapicker(tmp_path):
+    # The Megapicker launches each pack through Steam (steam://run/<appid>), so
+    # the packs are wrapped already. Wrapping the picker would hold port 8081
+    # for as long as it is open and break capture for every pack it launches.
+    lib = tmp_path / "steamapps"
+    lib.mkdir()
+    (lib / "appmanifest_2828500.acf").write_text(
+        '"AppState"\n{\n\t"appid"\t"2828500"\n\t"name"\t"The Jackbox Megapicker"\n}\n'
+    )
+    (lib / "appmanifest_1850960.acf").write_text(
+        '"AppState"\n{\n\t"appid"\t"1850960"\n\t"name"\t"The Jackbox Party Pack 9"\n}\n'
+    )
+    assert jackbox_app_ids([lib]) == {"1850960": "The Jackbox Party Pack 9"}

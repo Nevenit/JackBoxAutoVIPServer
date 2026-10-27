@@ -14,6 +14,9 @@ SAVED_KEY = "LaunchOptions_jbvip_saved"
 # exact-path equality so a moved/renamed repo still uninstalls cleanly.
 JBVIP_MARKER = "jbvip-run.sh"
 
+# Packs it starts via steam://run are already wrapped; wrapping this would hold port 8081.
+MEGAPICKER_APP_ID = "2828500"
+
 
 def _child(parent: dict, name: str) -> dict:
     """Return parent[name], reusing any case-insensitive match instead of
@@ -87,7 +90,7 @@ def clear_launch_option(cfg: dict, app_id: str, value: str | None = None) -> dic
 
 
 def jackbox_app_ids(steamapps_dirs) -> dict:
-    """Map app_id -> name for installed apps whose name contains 'jackbox'."""
+    """Map app_id -> name for installed Jackbox apps, excluding the Megapicker."""
     found: dict[str, str] = {}
     for d in steamapps_dirs:
         for acf in Path(d).glob("appmanifest_*.acf"):
@@ -97,6 +100,6 @@ def jackbox_app_ids(steamapps_dirs) -> dict:
                 continue
             name = state.get("name", "")
             app_id = state.get("appid", "")
-            if app_id and "jackbox" in name.lower():
+            if app_id and app_id != MEGAPICKER_APP_ID and "jackbox" in name.lower():
                 found[app_id] = name
     return found
