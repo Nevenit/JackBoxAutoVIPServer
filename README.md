@@ -187,7 +187,9 @@ night, or after everyone has left or locked their phone (a page stays connected
 only while it is on screen). Switching packs with phones still on the page shows
 nothing and starts the game straight away. The window closes by itself as soon as
 a phone joins. Press **Skip** to close it at once; if you leave it, it gives up
-after 120 seconds and starts the game anyway. A dead or unreachable relay is
+after 120 seconds and starts the game anyway. On a later pack launch of the same
+night it gives up after 15 seconds, because phones that wake up follow along
+anyway. A dead or unreachable relay is
 handled the same way: the game **always** launches, LAN-only if the relay can't
 be reached and with phones following it if it can.
 

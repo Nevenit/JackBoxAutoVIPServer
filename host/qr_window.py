@@ -19,6 +19,7 @@ from pathlib import Path
 from host.session import (
     PAIRING_TIMEOUT_SECONDS,
     POLL_SECONDS,
+    REUSED_NIGHT_PAIRING_TIMEOUT_SECONDS,
     PairingWaiter,
     delete_session,
     qr_payload,
@@ -190,8 +191,12 @@ def main(argv=None) -> int:
         )
         return 0
 
+    # Nobody on a reused night is most likely a pack switch with every phone
+    # locked (the page holds its stream only while on screen): don't hold the game.
+    timeout = (PAIRING_TIMEOUT_SECONDS if night.created
+               else REUSED_NIGHT_PAIRING_TIMEOUT_SECONDS)
     try:
-        state = show(night.credentials)
+        state = show(night.credentials, timeout=timeout)
     except Exception as exc:
         # The credentials are already on disk, so the game will publish
         # normally — only the pairing window failed. A cosmetic failure must

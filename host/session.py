@@ -18,6 +18,9 @@ from pathlib import Path
 
 REQUEST_TIMEOUT_SECONDS = 5.0
 PAIRING_TIMEOUT_SECONDS = 120.0
+# A later pack launch that finds no phone connected: most likely every phone is
+# just locked, and a phone that wakes up follows the night anyway.
+REUSED_NIGHT_PAIRING_TIMEOUT_SECONDS = 15.0
 POLL_SECONDS = 1.0
 
 

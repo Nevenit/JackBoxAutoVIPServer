@@ -6,7 +6,13 @@ request goes out. What is left is main()'s own decisions.
 from types import SimpleNamespace
 
 from host import qr_window
-from host.session import Night, PairingWaiter, SessionCredentials
+from host.session import (
+    PAIRING_TIMEOUT_SECONDS,
+    REUSED_NIGHT_PAIRING_TIMEOUT_SECONDS,
+    Night,
+    PairingWaiter,
+    SessionCredentials,
+)
 
 CREDENTIALS = SessionCredentials(
     base_url="https://relay.example",
@@ -25,7 +31,7 @@ ARGV = [
 
 def arrange(monkeypatch, night, *, env_write_fails=False):
     """Replace main()'s collaborators. The result records what it did with them."""
-    did = SimpleNamespace(resumed=[], written=[], shown=[], deleted=[])
+    did = SimpleNamespace(resumed=[], written=[], shown=[], timeouts=[], deleted=[])
 
     def resume_or_create(base_url, night_file):
         did.resumed.append((base_url, night_file))
@@ -36,8 +42,9 @@ def arrange(monkeypatch, night, *, env_write_fails=False):
             raise OSError("read-only file system")
         did.written.append((path, credentials))
 
-    def show(credentials):
+    def show(credentials, *, timeout=PAIRING_TIMEOUT_SECONDS):  # show()'s default
         did.shown.append(credentials)
+        did.timeouts.append(timeout)
         return PairingWaiter.PAIRED
 
     monkeypatch.setattr(qr_window, "resume_or_create", resume_or_create)
@@ -54,6 +61,22 @@ def test_the_window_is_shown_when_no_phone_is_connected(monkeypatch):
     assert did.written == [(SESSION_ENV, CREDENTIALS)]
     assert did.shown == [CREDENTIALS]
     assert did.deleted == []
+
+
+def test_a_new_night_waits_the_full_pairing_time(monkeypatch):
+    did = arrange(monkeypatch, Night(CREDENTIALS, subscribers=0, created=True))
+    assert qr_window.main(ARGV) == 0
+    assert did.timeouts == [PAIRING_TIMEOUT_SECONDS]
+
+
+def test_a_reused_night_with_no_phone_connected_gives_up_quickly(monkeypatch):
+    # Most likely a pack switch with every phone locked: the page holds its
+    # stream only while it is on screen. A phone that wakes up follows the
+    # session anyway, so the window must not hold the game for long.
+    did = arrange(monkeypatch, Night(CREDENTIALS, subscribers=0, created=False))
+    assert qr_window.main(ARGV) == 0
+    assert did.shown == [CREDENTIALS]
+    assert did.timeouts == [REUSED_NIGHT_PAIRING_TIMEOUT_SECONDS] == [15.0]
 
 
 def test_no_window_when_phones_are_already_connected(monkeypatch, capsys):
