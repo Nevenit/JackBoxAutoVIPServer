@@ -80,15 +80,16 @@ updates — there is nothing per-game or per-version to maintain.
    nothing else on the machine is touched. Remove it any time with
    `sudo ./jbvip-redirect-down.sh`.
 
-   The proxy listens on port 8081. If something else is using that port, pick
-   another (say 8082): run `sudo ./jbvip-redirect-up.sh 8082` and add
-   `JBVIP_PROXY_PORT=8082` to `~/.config/jbvip/relay.env`, the file the relay
-   section below describes (the launcher reads it on every launch, relay or no
-   relay). Remove the old redirect first, with
-   `sudo ./jbvip-redirect-down.sh 8081` or a reboot, because
-   `jbvip-redirect-up.sh` only adds rules: the old port's would keep catching the
-   game's traffic. Pass the port to `jbvip-redirect-down.sh` whenever it isn't
-   8081.
+   The proxy listens on port 8081. If something else is using that port, move to
+   another (say 8082) in this order: remove the old redirect with
+   `sudo ./jbvip-redirect-down.sh 8081` (or reboot), then run
+   `sudo ./jbvip-redirect-up.sh 8082`, then add `JBVIP_PROXY_PORT=8082` to
+   `~/.config/jbvip/relay.env`, the file the relay section below describes (the
+   launcher reads it on every launch, relay or no relay). The removal has to
+   come first because `jbvip-redirect-down.sh` also deletes the cgroup the new
+   redirect needs; skipping it would leave the old port's rules catching the
+   game's traffic, since `jbvip-redirect-up.sh` only adds rules. Pass the port
+   to `jbvip-redirect-down.sh` whenever it isn't 8081.
 
 4. Start Steam and launch any Jackbox game normally. The room code is now served
    on TCP `:38469`. Test it with:
@@ -143,12 +144,14 @@ nothing new listening on your machine. The relay also serves a web page that put
 each new room on the players' phones, so nobody installs anything or types a
 code.
 
-See `relay/README.md` for deployment. Once it is running, create
-`~/.config/jbvip/relay.env` — the launcher reads it on every game launch:
+See `relay/README.md` for deployment. Once it is running, add its URL to
+`~/.config/jbvip/relay.env` — the launcher reads it on every game launch. The
+`>>` below creates the file if it is missing and keeps what is already in it,
+such as a `JBVIP_PROXY_PORT` line:
 
 ```bash
 mkdir -p ~/.config/jbvip
-cat > ~/.config/jbvip/relay.env <<'EOF'
+cat >> ~/.config/jbvip/relay.env <<'EOF'
 JBVIP_RELAY_URL=https://your-relay.example
 EOF
 chmod 600 ~/.config/jbvip/relay.env

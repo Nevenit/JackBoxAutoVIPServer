@@ -161,12 +161,14 @@ bwrap --dev-bind / / --bind "$SYS_CA" "$CA_TARGET" -- true 2>/dev/null || run_pl
 # does not wait for it, so right after quitting a pack it can still hold the
 # port. Hence up to 3 s of waiting here, and "wait" first in the notification.
 # A lasting clash needs another port, which jbvip-redirect-up.sh and this
-# launcher (JBVIP_PROXY_PORT) must both be given.
+# launcher (JBVIP_PROXY_PORT) must both be given, after jbvip-redirect-down.sh
+# removes the old one: up only appends rules and the first match wins, and down
+# also removes the cgroup, so down after up would undo the new redirect.
 # 8082 is only an example: no arithmetic on a user-supplied $PORT (see run_plain).
 port_up() { ss -ltn 2>/dev/null | grep -qE "[:.]$PORT[[:space:]]"; }
 for _ in $(seq 1 30); do port_up || break; sleep 0.1; done
 if port_up; then
-  run_plain "port $PORT is already in use, probably by the last launch's proxy still closing; wait a few seconds and launch again. To use another port, e.g. 8082, run sudo $REPO/jbvip-redirect-up.sh 8082 and set JBVIP_PROXY_PORT=8082 in ~/.config/jbvip/relay.env"
+  run_plain "port $PORT is already in use, probably by the last launch's proxy still closing; wait a few seconds and launch again. To use another port, e.g. 8082, run sudo $REPO/jbvip-redirect-down.sh $PORT, then sudo $REPO/jbvip-redirect-up.sh 8082, and set JBVIP_PROXY_PORT=8082 in ~/.config/jbvip/relay.env"
 fi
 
 # --- pair a phone, if a relay is configured ---------------------------------

@@ -544,8 +544,13 @@ def test_a_busy_proxy_port_still_starts_the_game(tmp_path):
     # The fix as well as the problem. Usually the last launch's proxy is still
     # closing; otherwise another port, which the redirect and this launcher
     # have to be given alike, and relay.env is where a Steam user can set it.
-    for hint in ("wait a few seconds", "jbvip-redirect-up.sh", "JBVIP_PROXY_PORT", "relay.env"):
+    hints = ("wait a few seconds", "jbvip-redirect-down.sh", "jbvip-redirect-up.sh",
+             "JBVIP_PROXY_PORT", "relay.env")
+    for hint in hints:
         assert hint in body
+    # In that order: up only appends rules (the first match wins), and down
+    # also removes the cgroup, so down after up would undo the new redirect.
+    assert [body.index(hint) for hint in hints] == sorted(body.index(hint) for hint in hints)
 
 
 def test_a_port_that_frees_within_3_seconds_is_waited_for(tmp_path):
