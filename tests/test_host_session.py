@@ -4,18 +4,24 @@ import stat
 import subprocess
 import urllib.error
 import urllib.request
+from dataclasses import asdict
 
 import pytest
 
 from host import session as host_session
 from host.session import (
+    Night,
     PairingWaiter,
     SessionCredentials,
+    clear_room,
     create_session,
     credentials_from_env,
     delete_session,
+    load_night,
     main,
     qr_payload,
+    resume_or_create,
+    save_night,
     subscriber_count,
     write_session_env,
 )
@@ -25,7 +31,11 @@ from tests.helpers import Clock, serving
 
 
 class RecordingCall:
-    """Stands in for the urllib round trip so no test touches the network."""
+    """Stands in for the urllib round trip so no test touches the network.
+
+    A queued response that is an exception is raised on its turn instead of
+    returned, so a test can say "the first call fails, the second succeeds".
+    """
 
     def __init__(self, *responses, exception=None):
         self.calls = []
@@ -36,7 +46,10 @@ class RecordingCall:
         self.calls.append((url, method, token))
         if self.exception is not None:
             raise self.exception
-        return self.responses.pop(0) if self.responses else None
+        response = self.responses.pop(0) if self.responses else None
+        if isinstance(response, BaseException):
+            raise response
+        return response
 
 
 CREDENTIALS = SessionCredentials(
@@ -154,6 +167,21 @@ def test_delete_session_never_raises():
     assert delete_session(CREDENTIALS, call=call) is False
 
 
+# --- clearing the room --------------------------------------------------
+
+def test_clear_room_deletes_the_code_with_the_publisher_token():
+    call = RecordingCall()
+    assert clear_room(CREDENTIALS, call=call) is True
+    assert call.calls == [
+        ("https://relay.example/sessions/sess-1/code", "DELETE", "pub-token")
+    ]
+
+
+def test_clear_room_never_raises():
+    # Same exit path as delete_session, same rule.
+    assert clear_room(CREDENTIALS, call=RecordingCall(exception=OSError("x"))) is False
+
+
 # --- the environment file -----------------------------------------------
 
 def test_the_session_env_file_is_only_readable_by_its_owner(tmp_path):
@@ -218,6 +246,156 @@ def test_credentials_from_a_half_set_environment_are_none(missing):
     assert credentials_from_env(environ) is None
 
 
+# --- tonight's session ----------------------------------------------------
+# One session lasts the whole game night, across pack launches. The host
+# keeps it in a file and asks the relay whether it is still alive.
+
+def http_error(code):
+    return urllib.error.HTTPError(
+        "https://relay.example/sessions/sess-1", code, "x", None, None
+    )
+
+
+def test_a_saved_night_is_reused_while_the_relay_still_has_it(tmp_path):
+    path = tmp_path / "night.json"
+    save_night(path, CREDENTIALS)
+    call = RecordingCall({"subscribers": 2, "expires_at": 1.0})
+    night = resume_or_create("https://relay.example", path, call=call)
+    assert night == Night(CREDENTIALS, subscribers=2, created=False)
+    assert call.calls == [
+        ("https://relay.example/sessions/sess-1", "GET", "pub-token")
+    ]
+
+
+@pytest.mark.parametrize("code", [401, 404])
+def test_a_night_the_relay_forgot_is_replaced_and_saved(tmp_path, code):
+    # 404: the relay restarted or the night aged out. 401: the id exists but
+    # the token is not ours.
+    path = tmp_path / "night.json"
+    save_night(path, CREDENTIALS)
+    call = RecordingCall(http_error(code), {**CREATED, "session_id": "sess-2"})
+    night = resume_or_create("https://relay.example", path, call=call)
+    assert night.created and night.subscribers == 0
+    assert night.credentials.session_id == "sess-2"
+    assert load_night(path).session_id == "sess-2"
+
+
+def test_a_night_saved_for_another_relay_is_not_reused(tmp_path):
+    path = tmp_path / "night.json"
+    save_night(path, CREDENTIALS)
+    call = RecordingCall(CREATED)
+    night = resume_or_create("https://other.example", path, call=call)
+    assert call.calls == [("https://other.example/sessions", "POST", None)]
+    assert night.created
+
+
+def test_a_trailing_slash_in_the_relay_url_still_finds_tonights_night(tmp_path):
+    # relay.env is edited by hand, and it is the same relay either way.
+    path = tmp_path / "night.json"
+    save_night(path, CREDENTIALS)
+    call = RecordingCall({"subscribers": 0, "expires_at": 1.0})
+    night = resume_or_create("https://relay.example/", path, call=call)
+    assert not night.created
+
+
+def test_with_no_saved_night_one_is_created_and_saved(tmp_path):
+    path = tmp_path / "state" / "jbvip" / "night.json"
+    night = resume_or_create(
+        "https://relay.example", path, call=RecordingCall(CREATED)
+    )
+    assert night.created and load_night(path) == night.credentials
+
+
+def test_an_unreachable_relay_is_an_error_not_a_new_night(tmp_path):
+    path = tmp_path / "night.json"
+    save_night(path, CREDENTIALS)
+    call = RecordingCall(exception=urllib.error.URLError("down"))
+    with pytest.raises(urllib.error.URLError):
+        resume_or_create("https://relay.example", path, call=call)
+    assert load_night(path) == CREDENTIALS
+
+
+@pytest.mark.parametrize("code", [403, 500, 503])
+def test_a_relay_that_errors_for_another_reason_is_not_a_new_night(tmp_path, code):
+    # Only "no such session" and "not your session" say the night is gone. An
+    # outage says nothing about it, and replacing the session would strand
+    # every phone that is still following it.
+    path = tmp_path / "night.json"
+    save_night(path, CREDENTIALS)
+    call = RecordingCall(http_error(code))
+    with pytest.raises(urllib.error.HTTPError):
+        resume_or_create("https://relay.example", path, call=call)
+    assert [method for _, method, _ in call.calls] == ["GET"]
+    assert load_night(path) == CREDENTIALS
+
+
+def test_the_night_file_holds_all_four_fields(tmp_path):
+    path = tmp_path / "night.json"
+    save_night(path, CREDENTIALS)
+    assert json.loads(path.read_text()) == {
+        "base_url": "https://relay.example",
+        "session_id": "sess-1",
+        "publisher_token": "pub-token",
+        "subscriber_token": "sub-token",
+    }
+
+
+def test_the_night_file_is_only_readable_by_its_owner(tmp_path):
+    path = tmp_path / "night.json"
+    save_night(path, CREDENTIALS)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_the_night_file_is_tightened_even_if_it_already_exists(tmp_path):
+    # It holds both tokens, and O_CREAT's mode applies only on creation.
+    path = tmp_path / "night.json"
+    path.write_text("stale\n")
+    path.chmod(0o644)
+    save_night(path, CREDENTIALS)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_the_night_directory_is_created_private(tmp_path):
+    path = tmp_path / "state" / "jbvip" / "night.json"
+    save_night(path, CREDENTIALS)
+    assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+
+
+def test_a_missing_night_file_counts_as_no_night(tmp_path):
+    assert load_night(tmp_path / "night.json") is None
+
+
+def test_a_corrupt_night_file_counts_as_no_night(tmp_path):
+    path = tmp_path / "night.json"
+    path.write_text("not json")
+    assert load_night(path) is None
+
+
+SAVED = asdict(CREDENTIALS)
+
+
+@pytest.mark.parametrize("contents", [
+    {**SAVED, "session_id": "../other-session"},   # would rewrite the request URL
+    {**SAVED, "publisher_token": "tok en"},
+    {**SAVED, "subscriber_token": ""},
+    {**SAVED, "base_url": "http://relay.example"},  # the https rule has no back door
+    {**SAVED, "session_id": 7},
+    {key: value for key, value in SAVED.items() if key != "subscriber_token"},
+    ["sess-1", "pub-token"],
+], ids=["url-injection", "token-with-space", "empty-token", "plain-http",
+        "wrong-type", "missing-field", "not-an-object"])
+def test_a_night_file_that_fails_the_relay_checks_counts_as_no_night(
+    tmp_path, contents
+):
+    # The same scrutiny a relay response gets: these are about to be put in a
+    # URL, and the file is only as trustworthy as the directory it sits in.
+    # (SAVED uses the keys test_the_night_file_holds_all_four_fields pins, so
+    # none of these is rejected for a misspelt key.)
+    path = tmp_path / "night.json"
+    path.write_text(json.dumps(contents))
+    assert load_night(path) is None
+
+
 # --- main() ---------------------------------------------------------------
 # main() runs inside the launcher's EXIT trap, so a non-zero return would
 # change the exit code the game reports to Steam. Every documented
@@ -230,7 +408,7 @@ def test_main_with_no_flags_returns_zero_rather_than_raising():
     assert main([]) == 0
 
 
-def test_main_delete_with_no_credentials_in_environment_attempts_no_request(
+def test_main_clear_with_no_credentials_in_environment_attempts_no_request(
     monkeypatch,
 ):
     for var in ("JBVIP_RELAY_URL", "JBVIP_SESSION_ID", "JBVIP_SESSION_TOKEN"):
@@ -240,22 +418,26 @@ def test_main_delete_with_no_credentials_in_environment_attempts_no_request(
         raise AssertionError("no credentials means no request should be attempted")
 
     monkeypatch.setattr(host_session.urllib.request, "urlopen", unexpected_urlopen)
-    assert main(["--delete"]) == 0
+    assert main(["--clear"]) == 0
 
 
-def test_main_delete_returns_zero_even_when_the_delete_fails(monkeypatch):
+def test_main_clear_returns_zero_even_when_the_clear_fails(monkeypatch):
     monkeypatch.setenv("JBVIP_RELAY_URL", "https://relay.example")
     monkeypatch.setenv("JBVIP_SESSION_ID", "sess-1")
     monkeypatch.setenv("JBVIP_SESSION_TOKEN", "pub-token")
     attempted = []
 
-    def failing_urlopen(*args, **kwargs):
-        attempted.append(1)
+    def failing_urlopen(request, **kwargs):
+        attempted.append((request.get_method(), request.full_url))
         raise urllib.error.URLError("relay down")
 
     monkeypatch.setattr(host_session.urllib.request, "urlopen", failing_urlopen)
-    assert main(["--delete"]) == 0
-    assert attempted == [1]
+    assert main(["--clear"]) == 0
+    # Exactly one request, and it clears the room: deleting the session would
+    # end the night for every phone on it.
+    assert attempted == [
+        ("DELETE", "https://relay.example/sessions/sess-1/code")
+    ]
 
 
 # --- PairingWaiter ------------------------------------------------------
@@ -426,3 +608,43 @@ async def test_the_real_client_counts_a_real_subscriber():
             assert await asyncio.to_thread(
                 subscriber_count, credentials, call=downgrading_call
             ) == 1
+
+
+async def test_the_real_client_clears_a_real_room_and_keeps_the_session():
+    state = RelayState(now=Clock())
+    async with serving(build_app(state)) as http:
+        base = f"https://127.0.0.1:{http.base_url.port}"
+        credentials = await asyncio.to_thread(
+            create_session, base, call=downgrading_call
+        )
+        state.publish(credentials.session_id, "WXYZ", 1.0)
+        assert await asyncio.to_thread(
+            clear_room, credentials, call=downgrading_call
+        ) is True
+        assert state.current_code(credentials.session_id) is None
+        assert state.session(credentials.session_id) is not None
+
+
+async def test_the_real_client_resumes_a_real_session_until_the_relay_forgets_it(
+    tmp_path,
+):
+    # The fakes above decide what a 404 looks like. This is the real one: it
+    # must reach resume_or_create as an HTTPError with a .code.
+    state = RelayState(now=Clock())
+    path = tmp_path / "night.json"
+    async with serving(build_app(state)) as http:
+        base = f"https://127.0.0.1:{http.base_url.port}"
+
+        def resume():
+            return resume_or_create(base, path, call=downgrading_call)
+
+        first = await asyncio.to_thread(resume)
+        again = await asyncio.to_thread(resume)
+        assert first.created and not again.created
+        assert again.credentials == first.credentials
+
+        state.delete_session(first.credentials.session_id)
+        replaced = await asyncio.to_thread(resume)
+        assert replaced.created
+        assert replaced.credentials.session_id != first.credentials.session_id
+        assert state.session(replaced.credentials.session_id) is not None

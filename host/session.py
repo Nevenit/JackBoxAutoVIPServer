@@ -1,4 +1,5 @@
-"""Host-side relay client: create a session, watch for a phone, tidy up.
+"""Host-side relay client: keep one session for the night, watch for a phone,
+clear the room.
 
 Stdlib only, with an injected transport and clock, so all of it tests without
 a network and without a display. Deliberately imports no GUI toolkit: the
@@ -10,8 +11,10 @@ import os
 import shlex
 import sys
 import time
+import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 
 REQUEST_TIMEOUT_SECONDS = 5.0
 PAIRING_TIMEOUT_SECONDS = 120.0
@@ -119,17 +122,24 @@ def delete_session(credentials: SessionCredentials, *, call=_urllib_call) -> boo
     return True
 
 
-def write_session_env(path, credentials: SessionCredentials) -> None:
-    """Write the game's credentials at mode 600, for the launcher to source.
+def clear_room(credentials: SessionCredentials, *, call=_urllib_call) -> bool:
+    """Tell the phones this pack is over, keeping the night's session.
 
-    A file rather than arguments: a command line is world-readable through
-    `ps`, and this token can publish to the session. Only the *publisher*
-    token goes in — the extractor publishes and has no business subscribing.
+    Never raises: this runs on the launcher's exit path, like delete_session.
     """
-    text = (
-        f"JBVIP_SESSION_ID={shlex.quote(credentials.session_id)}\n"
-        f"JBVIP_SESSION_TOKEN={shlex.quote(credentials.publisher_token)}\n"
-    )
+    try:
+        call(
+            f"{credentials.base_url}/sessions/{credentials.session_id}/code",
+            "DELETE",
+            credentials.publisher_token,
+        )
+    except Exception:
+        return False
+    return True
+
+
+def _write_private(path, text: str) -> None:
+    """Write `text` to `path` at mode 600, whatever the file was before."""
     handle = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     # The mode argument above applies only on creation. fchmod the descriptor
     # so a pre-existing file cannot leave the token world-readable, and do it
@@ -139,11 +149,25 @@ def write_session_env(path, credentials: SessionCredentials) -> None:
         file.write(text)
 
 
+def write_session_env(path, credentials: SessionCredentials) -> None:
+    """Write the game's credentials at mode 600, for the launcher to source.
+
+    A file rather than arguments: a command line is world-readable through
+    `ps`, and this token can publish to the session. Only the *publisher*
+    token goes in — the extractor publishes and has no business subscribing.
+    """
+    _write_private(
+        path,
+        f"JBVIP_SESSION_ID={shlex.quote(credentials.session_id)}\n"
+        f"JBVIP_SESSION_TOKEN={shlex.quote(credentials.publisher_token)}\n",
+    )
+
+
 def credentials_from_env(environ=None) -> SessionCredentials | None:
     """Rebuild credentials the launcher exported. None if any part is missing.
 
     The subscriber token is not in the environment and is not needed here —
-    only `delete_session` uses this, and deleting is a publisher action.
+    only `clear_room` uses this, and clearing is a publisher action.
     """
     environ = os.environ if environ is None else environ
     base_url = environ.get("JBVIP_RELAY_URL", "")
@@ -161,6 +185,83 @@ def credentials_from_env(environ=None) -> SessionCredentials | None:
         publisher_token=token,
         subscriber_token="",
     )
+
+
+def save_night(path, credentials: SessionCredentials) -> None:
+    """Remember tonight's session, for the next pack launch to find.
+
+    Unlike the session env file this holds both tokens: the publisher one to
+    ask the relay whether the session still lives, the subscriber one for the
+    QR when nobody is connected. So it is written at mode 600, in a directory
+    created at 700. It lives outside the launcher's per-run state, which is
+    deleted on every exit.
+    """
+    Path(path).parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _write_private(
+        path,
+        json.dumps({
+            "base_url": credentials.base_url,
+            "session_id": credentials.session_id,
+            "publisher_token": credentials.publisher_token,
+            "subscriber_token": credentials.subscriber_token,
+        }),
+    )
+
+
+def load_night(path) -> SessionCredentials | None:
+    """Tonight's saved session, or None when there is no usable one.
+
+    Every way the file can be unusable means the same thing — mint a fresh
+    session, which overwrites it — so none of them is an error. Its fields get
+    the checks a relay response gets: they are about to go into a URL.
+    """
+    try:
+        with open(path) as file:
+            saved = json.load(file)
+        return SessionCredentials(
+            base_url=_normalise(saved["base_url"]),
+            session_id=_checked(saved["session_id"], "session id"),
+            publisher_token=_checked(saved["publisher_token"], "publisher token"),
+            subscriber_token=_checked(saved["subscriber_token"], "subscriber token"),
+        )
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+@dataclass(frozen=True)
+class Night:
+    """What a launch found for tonight: the session, how many phones are
+    already on it, and whether this launch minted it. A launch may only give
+    back a session it minted; a reused one has phones following it."""
+
+    credentials: SessionCredentials
+    subscribers: int
+    created: bool
+
+
+def resume_or_create(base_url: str, night_path, *, call=_urllib_call) -> Night:
+    """Tonight's saved session if the relay still has it, else a new one.
+
+    Only 404 (the relay restarted, or the night aged out) and 401 (the id is
+    there but the token is not ours) say the saved session is gone. Anything
+    else — unreachable, a 5xx, a timeout — says nothing about it, so it
+    propagates and the file stays: replacing a session the relay merely
+    failed to answer for would strand every phone still following it.
+    """
+    base = _normalise(base_url)
+    saved = load_night(night_path)
+    if saved is not None and saved.base_url == base:
+        try:
+            return Night(saved, subscriber_count(saved, call=call), created=False)
+        except urllib.error.HTTPError as exc:
+            if exc.code not in (401, 404):
+                raise
+    credentials = create_session(base, call=call)
+    # shortcut: if this save raises, the new session is left to expire on the
+    # relay (roomless, 2 h) instead of being deleted; delete it here if that
+    # is ever seen in practice.
+    save_night(night_path, credentials)
+    return Night(credentials, 0, created=True)
 
 
 class PairingWaiter:
@@ -206,13 +307,13 @@ class PairingWaiter:
 
 
 def main(argv=None) -> int:
-    """`python3 -m host.session --delete`, called from the launcher's cleanup.
+    """`python3 -m host.session --clear`, called from the launcher's cleanup.
 
     Reads the credentials from the environment rather than arguments, so the
     token never appears in a process listing.
 
-    Every *documented* invocation returns 0, including bare `--delete` with
-    nothing to delete: this runs inside the launcher's EXIT trap, where a
+    Every *documented* invocation returns 0, including bare `--clear` with
+    nothing to clear: this runs inside the launcher's EXIT trap, where a
     non-zero status would change the exit code the game reported to Steam.
     That contract does not reach an *undocumented* flag — argparse's own
     `parse_args` still raises `SystemExit(2)` on one, and preventing that
@@ -222,19 +323,20 @@ def main(argv=None) -> int:
     """
     parser = argparse.ArgumentParser(description="jbvip relay session helper")
     parser.add_argument(
-        "--delete", action="store_true",
-        help="delete the session named by JBVIP_SESSION_ID and exit",
+        "--clear", action="store_true",
+        help="clear the room of the session named by JBVIP_SESSION_ID and exit",
     )
     args = parser.parse_args(argv)
-    if not args.delete:
-        print("jbvip: nothing to do; pass --delete", file=sys.stderr)
+    if not args.clear:
+        print("jbvip: nothing to do; pass --clear", file=sys.stderr)
         return 0
     credentials = credentials_from_env()
     if credentials is not None:
-        delete_session(credentials)
+        clear_room(credentials)
     # Always 0. This runs inside the launcher's EXIT trap, where a non-zero
-    # status would change the exit code the game reported to Steam. The
-    # session self-expires anyway, so a failed delete costs nothing.
+    # status would change the exit code the game reported to Steam. A failed
+    # clear costs only that phones keep showing the finished room until the
+    # next pack publishes.
     return 0
 
 

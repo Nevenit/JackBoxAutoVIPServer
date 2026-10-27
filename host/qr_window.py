@@ -20,9 +20,9 @@ from host.session import (
     PAIRING_TIMEOUT_SECONDS,
     POLL_SECONDS,
     PairingWaiter,
-    create_session,
     delete_session,
     qr_payload,
+    resume_or_create,
     subscriber_count,
     write_session_env,
 )
@@ -126,29 +126,36 @@ def show(credentials, *, count=None, timeout=PAIRING_TIMEOUT_SECONDS) -> str:
 
 
 def main(argv=None) -> int:
-    """`python3 -m host.qr_window --base-url <URL> --session-env <PATH>`.
+    """`python3 -m host.qr_window --base-url <URL> --session-env <PATH>
+    --night-file <PATH>`.
 
     Exits non-zero only when the game will not have working relay
-    credentials on disk: the session could not be created, or it was created
-    but write_session_env could not put its credentials where the launcher
-    reads them. Once those credentials are written, nothing that happens
-    next can turn the exit code non-zero again — paired, skipped, timed out,
-    no display, or the pairing window itself blowing up (a full /tmp, a
-    dead Tk) are all exit 0, because the session is live and publishing will
-    work regardless of whether anyone ever saw the QR code.
+    credentials on disk: the night's session could not be resumed or created,
+    or it could but write_session_env could not put its credentials where the
+    launcher reads them. Once those credentials are written, nothing that
+    happens next can turn the exit code non-zero again — paired, skipped,
+    timed out, no display, phones already connected, or the pairing window
+    itself blowing up (a full /tmp, a dead Tk) are all exit 0, because the
+    session is live and publishing will work regardless of whether anyone
+    ever saw the QR code.
     """
     parser = argparse.ArgumentParser(
-        description="Create a relay session and show its pairing QR code"
+        description="Resume tonight's relay session, or create one, and show "
+                    "its pairing QR code if no phone is connected"
     )
     parser.add_argument("--base-url", required=True, help="https:// relay URL")
     parser.add_argument(
         "--session-env", required=True,
         help="path to write JBVIP_SESSION_ID/JBVIP_SESSION_TOKEN into",
     )
+    parser.add_argument(
+        "--night-file", required=True,
+        help="path where tonight's session is kept between pack launches",
+    )
     args = parser.parse_args(argv)
 
     try:
-        credentials = create_session(args.base_url)
+        night = resume_or_create(args.base_url, args.night_file)
     except Exception as exc:
         # A dead VPS must never cost a game night.
         print(
@@ -158,12 +165,15 @@ def main(argv=None) -> int:
         return 1
 
     try:
-        write_session_env(args.session_env, credentials)
+        write_session_env(args.session_env, night.credentials)
     except OSError as exc:
-        # The session is live but the game will never see its credentials, so
-        # it would sit on the relay until it idled out. Give it back rather
-        # than leak a slot for four hours.
-        delete_session(credentials)
+        # A session minted just now is live but the game will never see its
+        # credentials, so it would sit on the relay until it idled out. Give
+        # it back rather than leak a slot for four hours. A reused one is
+        # tonight's: phones may be following it, and the night file still
+        # names it, so it stays.
+        if night.created:
+            delete_session(night.credentials)
         print(
             f"jbvip: could not write {args.session_env} ({exc}); "
             "the game will run LAN-only",
@@ -171,8 +181,17 @@ def main(argv=None) -> int:
         )
         return 1
 
+    if night.subscribers >= 1:
+        # A pack switch with phones still on the session: nothing to scan.
+        print(
+            f"jbvip: {night.subscribers} phone(s) already connected; "
+            "no QR needed",
+            file=sys.stderr,
+        )
+        return 0
+
     try:
-        state = show(credentials)
+        state = show(night.credentials)
     except Exception as exc:
         # The credentials are already on disk, so the game will publish
         # normally — only the pairing window failed. A cosmetic failure must
