@@ -13,7 +13,15 @@ from relay.state import (
     ROOMLESS_SECONDS,
     SESSION_IDLE_SECONDS,
 )
-from tests.helpers import Clock, auth, first_event, new_session, serving, stream_ends
+from tests.helpers import (
+    Clock,
+    auth,
+    first_event,
+    new_session,
+    next_events,
+    serving,
+    stream_ends,
+)
 
 
 def make(clock=None, **limiters):
@@ -27,6 +35,10 @@ def publish_url(session):
 
 def subscribe_url(session):
     return f"/sessions/{session['session_id']}/subscribe"
+
+
+def code_url(session):
+    return f"/sessions/{session['session_id']}/code"
 
 
 # --- the headline requirement -------------------------------------------
@@ -145,6 +157,7 @@ async def test_the_publisher_token_cannot_subscribe():
         ("GET", "/sessions/nope"),
         ("GET", "/sessions/nope/subscribe"),
         ("DELETE", "/sessions/nope"),
+        ("DELETE", "/sessions/nope/code"),
     ],
 )
 async def test_an_unknown_session_is_a_404_not_a_401(method, path):
@@ -189,8 +202,8 @@ async def test_publishing_stores_the_code_against_that_session():
 
 async def test_an_explicit_epoch_timestamp_is_not_silently_replaced():
     # 0.0 is falsy, so a `or time.time()` default would discard it. `ts` is
-    # the host's clock and travels to the phone for its own freshness check;
-    # the relay overwriting it would collapse the two-clock design.
+    # the host's stamp for when it saw the code and reaches phones unchanged;
+    # the relay replacing it with its own clock would misreport that moment.
     state, app = make()
     async with serving(app) as http:
         session = await new_session(http)
@@ -279,6 +292,106 @@ async def test_a_wrong_token_on_a_live_session_is_a_401_not_a_404():
     assert response.status_code == 401
 
 
+# --- clearing the room --------------------------------------------------
+
+async def test_clearing_the_room_tells_listening_phones():
+    state, app = make()
+    async with serving(app) as http:
+        session = await new_session(http)
+        state.publish(session["session_id"], "WEWW", 1000.0)
+        async with http.stream(
+            "GET", subscribe_url(session), headers=auth(session["subscriber_token"])
+        ) as response:
+            cleared = await http.delete(
+                code_url(session), headers=auth(session["publisher_token"])
+            )
+            assert cleared.status_code == 204
+            first, second = await next_events(response, 2)
+            assert first["code"] == "WEWW"
+            assert second["code"] is None
+            assert set(second) == {"code", "ts"}  # the shape the page reads
+
+
+async def test_a_phone_that_joins_after_a_clear_gets_no_code():
+    state, app = make()
+    async with serving(app) as http:
+        session = await new_session(http)
+        state.publish(session["session_id"], "WEWW", 1000.0)
+        state.clear_code(session["session_id"])
+        async with http.stream(
+            "GET", subscribe_url(session), headers=auth(session["subscriber_token"])
+        ) as response:
+            with pytest.raises(asyncio.TimeoutError):
+                await first_event(response, timeout=0.5)
+
+
+async def test_clearing_when_there_is_no_room_tells_nobody():
+    # Nothing was removed, so there is nothing to announce: the first thing a
+    # phone hears is the code that follows. (Asserting on that, rather than on
+    # silence, keeps the test from having to sleep.)
+    _, app = make()
+    async with serving(app) as http:
+        session = await new_session(http)
+        async with http.stream(
+            "GET", subscribe_url(session), headers=auth(session["subscriber_token"])
+        ) as response:
+            cleared = await http.delete(
+                code_url(session), headers=auth(session["publisher_token"])
+            )
+            assert cleared.status_code == 204
+            await http.post(
+                publish_url(session),
+                json={"code": "WEWW", "ts": 1000.0},
+                headers=auth(session["publisher_token"]),
+            )
+            assert await first_event(response) == {"code": "WEWW", "ts": 1000.0}
+
+
+async def test_clearing_needs_the_publisher_token():
+    _, app = make()
+    async with serving(app) as http:
+        session = await new_session(http)
+        response = await http.delete(
+            code_url(session), headers=auth(session["subscriber_token"])
+        )
+    assert response.status_code == 401
+
+
+async def test_clearing_is_charged_to_the_sessions_publish_budget():
+    # One budget for everything the publisher token can do. A clear with its
+    # own (or no) limiter would be a way round the per-session limit.
+    _, app = make(
+        publish_limiter_factory=lambda: RateLimiter(limit=1, window_seconds=60.0)
+    )
+    async with serving(app) as http:
+        session = await new_session(http)
+        headers = auth(session["publisher_token"])
+        published = await http.post(
+            publish_url(session), json={"code": "WEWW", "ts": 1000.0}, headers=headers
+        )
+        cleared = await http.delete(code_url(session), headers=headers)
+    assert published.status_code == 204
+    assert cleared.status_code == 429
+
+
+async def test_a_clear_that_loses_a_race_with_expiry_is_a_404_not_a_500(monkeypatch):
+    # The clock can carry the session past its deadline between the auth check
+    # and the clear itself; the state then raises KeyError.
+    state, app = make()
+
+    def expired_meanwhile(session_id):
+        raise KeyError(session_id)
+
+    monkeypatch.setattr(state, "clear_code", expired_meanwhile)
+    async with serving(app) as http:
+        session = await new_session(http)
+        response = await http.delete(
+            code_url(session), headers=auth(session["publisher_token"])
+        )
+    assert response.status_code == 404
+    assert response.json() == {"error": "no such session"}
+
+
 # --- subscribing --------------------------------------------------------
 
 async def test_a_subscriber_receives_the_current_code_on_connect():
@@ -308,21 +421,36 @@ async def test_a_subscriber_receives_a_code_published_after_connecting():
             assert await first_event(response) == {"code": "ZZZZ", "ts": 1000.0}
 
 
-async def test_the_subscriber_cap_refuses_the_seventeenth_phone():
+async def test_a_late_subscriber_gets_the_current_code_however_old():
+    clock = Clock(1000.0)
+    state, app = make(clock)
+    async with serving(app) as http:
+        session = await new_session(http)
+        state.publish(session["session_id"], "WEWW", 1000.0)
+        clock.t = 1000.0 + 3 * 3600
+        async with http.stream(
+            "GET", subscribe_url(session), headers=auth(session["subscriber_token"])
+        ) as response:
+            assert (await first_event(response))["code"] == "WEWW"
+
+
+async def test_a_full_session_drops_its_oldest_stream_for_a_new_phone():
     _, app = make()
     async with serving(app) as http:
         session = await new_session(http)
         url, headers = subscribe_url(session), auth(session["subscriber_token"])
         async with contextlib.AsyncExitStack() as stack:
-            for _ in range(MAX_SUBSCRIBERS_PER_SESSION):
-                response = await stack.enter_async_context(
+            streams = [
+                await stack.enter_async_context(
                     http.stream("GET", url, headers=headers)
                 )
-                assert response.status_code == 200
-            refused = await stack.enter_async_context(
+                for _ in range(MAX_SUBSCRIBERS_PER_SESSION)
+            ]
+            newcomer = await stack.enter_async_context(
                 http.stream("GET", url, headers=headers)
             )
-            assert refused.status_code == 429
+            assert newcomer.status_code == 200
+            assert await stream_ends(streams[0])
 
 
 # --- session info -------------------------------------------------------
@@ -436,6 +564,25 @@ async def test_evicting_an_idle_session_ends_its_stream():
             assert await stream_ends(response) is True
 
 
+async def test_a_stream_ends_once_its_session_has_expired(monkeypatch):
+    # A session with no room ends on the clock alone, so no request arrives to
+    # reap it, and the keepalive's touch() quietly does nothing for a dead
+    # session. The stream has to notice for itself, or the phone waits forever.
+    monkeypatch.setattr("relay.app.KEEPALIVE_SECONDS", 0.05)
+    clock = Clock(1000.0)
+    _, app = make(clock)
+    async with serving(app) as http:
+        session = await new_session(http)  # never gets a room
+        async with http.stream(
+            "GET", subscribe_url(session), headers=auth(session["subscriber_token"])
+        ) as response:
+            assert response.status_code == 200
+            clock.t += ROOMLESS_SECONDS + 1
+            assert await stream_ends(response) is True
+        # Reaped, not just abandoned: the session's bookkeeping is released.
+        assert session["session_id"] not in app.state.relay._queues
+
+
 async def test_deleting_a_session_ends_its_stream_and_frees_capacity():
     state, app = make()
     async with serving(app) as http:
@@ -529,7 +676,7 @@ async def test_a_subscriber_that_stops_draining_is_dropped_and_closed():
     relay = Relay(RelayState(now=Clock()))
     session = relay.state.create_session()
     queue = asyncio.Queue(maxsize=2)
-    relay._queues[session.session_id] = {queue}
+    relay._queues[session.session_id] = dict.fromkeys([queue])
     for _ in range(3):
         relay._fan_out(session.session_id, {"code": "WEWW", "ts": 1000.0})
     assert queue not in relay._queues[session.session_id]
@@ -541,7 +688,7 @@ async def test_an_abandoned_queue_does_not_stall_a_live_subscriber():
     relay = Relay(RelayState(now=Clock()))
     session = relay.state.create_session()
     abandoned, live = asyncio.Queue(maxsize=1), asyncio.Queue(maxsize=8)
-    relay._queues[session.session_id] = {abandoned, live}
+    relay._queues[session.session_id] = dict.fromkeys([abandoned, live])
     for _ in range(3):
         relay._fan_out(session.session_id, {"code": "WEWW", "ts": 1000.0})
     assert live in relay._queues[session.session_id]
@@ -554,7 +701,7 @@ async def test_releasing_a_session_closes_even_a_queue_that_is_full():
     relay = Relay(RelayState(now=Clock()))
     session = relay.state.create_session()
     queue = asyncio.Queue(maxsize=1)
-    relay._queues[session.session_id] = {queue}
+    relay._queues[session.session_id] = dict.fromkeys([queue])
     queue.put_nowait({"code": "WEWW", "ts": 1000.0})
     relay._release(session.session_id)
     assert queue.get_nowait() is None

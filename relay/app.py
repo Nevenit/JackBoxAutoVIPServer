@@ -63,7 +63,9 @@ class Relay:
     def __init__(self, state: RelayState, *, create_limiter=None,
                  publish_limiter_factory=None):
         self.state = state
-        self._queues: dict[str, set[asyncio.Queue]] = {}
+        # A dict, not a set, for its insertion order: the first key is the
+        # session's oldest stream. Values are unused.
+        self._queues: dict[str, dict[asyncio.Queue, None]] = {}
         self._publish_limiters: dict[str, RateLimiter] = {}
         self._create_limiter = create_limiter or RateLimiter(
             limit=CREATE_LIMIT_PER_MINUTE, window_seconds=60.0
@@ -109,7 +111,7 @@ class Relay:
                 # survive both eviction and DELETE, and it would have freed a
                 # slot under MAX_SUBSCRIBERS_PER_SESSION for a replacement.
                 # Close it properly so the socket actually goes away.
-                self._queues.get(session_id, set()).discard(queue)
+                self._queues.get(session_id, {}).pop(queue, None)
                 self._close_queue(queue)
 
     # --- routes ---
@@ -205,19 +207,49 @@ class Relay:
         self._reap()
         return Response(status_code=204)
 
+    async def clear_code(self, request):
+        """The host has no room right now: forget the code and tell the phones."""
+        session_id = request.path_params["session_id"]
+        refusal = self._refuse(request, session_id)
+        if refusal is not None:
+            return refusal
+        # One budget for everything the publisher token does, as in publish.
+        limiter = self._publish_limiters.setdefault(
+            session_id, self._new_publish_limiter()
+        )
+        if not limiter.allow():
+            return JSONResponse({"error": "rate limited"}, status_code=429)
+        try:
+            cleared = self.state.clear_code(session_id)
+        except KeyError:
+            # Expiry follows the clock, not the event loop, so the session can
+            # pass its deadline between _refuse's check and this call.
+            return JSONResponse({"error": "no such session"}, status_code=404)
+        if cleared:
+            self._fan_out(session_id, {"code": None, "ts": time.time()})
+        # 204 whether or not there was a code to remove: the launcher clears on
+        # every exit and has no use for the difference.
+        return Response(status_code=204)
+
     async def subscribe(self, request):
         session_id = request.path_params["session_id"]
         refusal = self._refuse(request, session_id, subscriber=True)
         if refusal is not None:
             return refusal
-        queues = self._queues.setdefault(session_id, set())
+        queues = self._queues.setdefault(session_id, {})
         if len(queues) >= MAX_SUBSCRIBERS_PER_SESSION:
-            return JSONResponse({"error": "too many subscribers"}, status_code=429)
+            # A phone that sleeps or changes network leaves a stream that stays
+            # registered until a keepalive write fails, so a full session is
+            # likelier to hold ghosts than a full room of live phones. Drop the
+            # oldest rather than lock the newcomer out of the night.
+            oldest = next(iter(queues))
+            del queues[oldest]
+            self._close_queue(oldest)
 
         # NO `await` from here to the return. A code published in that window
         # would be lost: too late for the seed, too early for the fan-out.
         queue: asyncio.Queue = asyncio.Queue(maxsize=SUBSCRIBER_QUEUE_SIZE)
-        queues.add(queue)
+        queues[queue] = None
         self.state.touch(session_id)
         current = self.state.current_code(session_id)
         if current is not None:
@@ -231,6 +263,14 @@ class Relay:
                             queue.get(), KEEPALIVE_SECONDS
                         )
                     except asyncio.TimeoutError:
+                        if self.state.session(session_id) is None:
+                            # The session is dead and nothing has reaped it (a
+                            # night with no room ends on the clock alone), so
+                            # the touch below would do nothing and this stream
+                            # would keepalive forever. End it; reaping closes
+                            # the session's other streams too.
+                            self._reap()
+                            return
                         # Touch on every keepalive, not just on connect. A
                         # whole game night is normally ONE publish — the
                         # publisher de-duplicates and a pack keeps one room
@@ -245,7 +285,7 @@ class Relay:
                         return
                     yield f"data: {json.dumps(payload)}\n\n".encode()
             finally:
-                self._queues.get(session_id, set()).discard(queue)
+                self._queues.get(session_id, {}).pop(queue, None)
 
         return StreamingResponse(
             stream(),
@@ -275,6 +315,8 @@ def build_app(state: RelayState, *, create_limiter=None,
                   methods=["DELETE"]),
             Route("/sessions/{session_id}/publish", relay.publish,
                   methods=["POST"]),
+            Route("/sessions/{session_id}/code", relay.clear_code,
+                  methods=["DELETE"]),
             Route("/sessions/{session_id}/subscribe", relay.subscribe,
                   methods=["GET"]),
             Route("/j", relay.join_page, methods=["GET"]),

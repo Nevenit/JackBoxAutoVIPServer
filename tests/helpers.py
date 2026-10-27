@@ -53,6 +53,25 @@ async def first_event(response, timeout=3.0):
     return await asyncio.wait_for(read(), timeout)
 
 
+async def next_events(response, count, timeout=3.0):
+    """The next `count` `data:` payloads off an SSE response, in one pass.
+
+    httpx cannot iterate a response twice, so first_event works once per
+    response; a test that wants several events has to take them all here.
+    """
+
+    async def read():
+        events = []
+        async for line in response.aiter_lines():
+            if line.startswith("data: "):
+                events.append(json.loads(line[len("data: "):]))
+                if len(events) == count:
+                    break
+        return events
+
+    return await asyncio.wait_for(read(), timeout)
+
+
 async def stream_ends(response, timeout=3.0):
     """True once the server has closed the stream rather than holding it open."""
 
