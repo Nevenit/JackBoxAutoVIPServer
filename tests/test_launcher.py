@@ -93,6 +93,20 @@ def test_the_proxy_port_comes_from_the_config_file_or_defaults_to_8081(tmp_path)
     assert run_block(tmp_path, show="PORT") == "8081"
 
 
+@pytest.mark.parametrize("contents", [
+    "JBVIP_RELAY_URL = https://x\n",  # a command, not an assignment
+    'JBVIP_RELAY_URL="https://x\n',   # an unclosed quote: a syntax error
+], ids=["bad-line", "syntax-error"])
+def test_a_typo_in_the_config_file_does_not_stop_the_launch(tmp_path, contents):
+    # The file is sourced under set -e, where a failing line used to end the
+    # launch before the game started. A hand-edited file will have typos.
+    config = tmp_path / ".config" / "jbvip"
+    config.mkdir(parents=True)
+    (config / "relay.env").write_text(contents)
+    assert run_block(tmp_path) == ""  # as if there were no file
+    assert run_block(tmp_path, show="PORT") == "8081"
+
+
 def test_the_config_file_no_longer_carries_a_pre_shared_secret():
     # Every credential is now minted per session at launch and dies with it.
     text = LAUNCHER.read_text()

@@ -64,8 +64,10 @@ export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
 # session at launch and dies with it, so there is no pre-shared secret on this
 # machine any more.
 RELAY_ENV="${XDG_CONFIG_HOME:-$HOME/.config}/jbvip/relay.env"
+# A typo in a hand-edited file must not cost a game night: on the left of ||,
+# set -e is off for the file's lines, so a bad line or a syntax error only warns.
 # shellcheck source=/dev/null
-[ -r "$RELAY_ENV" ] && . "$RELAY_ENV"
+if [ -r "$RELAY_ENV" ]; then . "$RELAY_ENV" || echo "jbvip: $RELAY_ENV has an error; check it" >&2; fi
 # After the file above on purpose: a Steam launch option has no shell to export
 # from, so a port other than the default is set in that file, and has to reach
 # this line. Nothing reads $PORT before it.
