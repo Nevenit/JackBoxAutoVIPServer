@@ -38,6 +38,13 @@ GAME=("$@")
 # state dir. The status is captured rather than left to `set -e`, which is off
 # inside an `if` condition or a `||` list, so it is the game's wherever this is
 # called from.
+#
+# A reason is read by someone who has just pressed Play, so it says what is wrong
+# AND how to fix it, in a sentence or two. Being a notification body it may be
+# parsed as markup: no <angle brackets>. And it is expanded at the call site under
+# `set -u`, so it may only use variables that are already set, and no arithmetic
+# on user-supplied ones: an error there ends the launch before this function runs,
+# which is exactly what it exists to prevent.
 run_plain() {
   echo "jbvip: $1; starting the game without room-code capture" >&2
   if command -v notify-send >/dev/null 2>&1; then
@@ -48,16 +55,20 @@ run_plain() {
   exit "$rc"
 }
 
-PORT="${JBVIP_PROXY_PORT:-8081}"
 REPO="$(dirname "$(readlink -f "$0")")"
 export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
 # Optional relay config. Steam launch options inherit the Steam client's
 # environment, not a shell's, so a terminal `export` would never reach us.
-# Only a URL now — every credential is minted per session at launch and dies
-# with it, so there is no pre-shared secret on this machine any more.
+# Only a URL (and the proxy port, below) now — every credential is minted per
+# session at launch and dies with it, so there is no pre-shared secret on this
+# machine any more.
 RELAY_ENV="${XDG_CONFIG_HOME:-$HOME/.config}/jbvip/relay.env"
 # shellcheck source=/dev/null
 [ -r "$RELAY_ENV" ] && . "$RELAY_ENV"
+# After the file above on purpose: a Steam launch option has no shell to export
+# from, so a port other than the default is set in that file, and has to reach
+# this line. Nothing reads $PORT before it.
+PORT="${JBVIP_PROXY_PORT:-8081}"
 # Normalise unset to empty so `set -u` stays safe, and so a run invoked directly
 # from a shell (rather than by Steam) still honours a real environment variable.
 JBVIP_RELAY_URL="${JBVIP_RELAY_URL:-}"
@@ -129,16 +140,19 @@ SYS_CA=""
 for f in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do
   [ -f "$f" ] && SYS_CA="$f" && break
 done
-[ -n "$SYS_CA" ] || run_plain "no system CA bundle found"
+[ -n "$SYS_CA" ] || run_plain "no system CA bundle found; install your distro's ca-certificates package"
 # bubblewrap 0.13 refuses to mount onto a symlink, and Arch's CA path is one, so
 # mount over the file it points to. The game still opens it through the link.
 CA_TARGET="$(readlink -f "$SYS_CA")"
 
-# Something else owns the proxy port. JBVIP_PROXY_PORT picks another one, and
-# jbvip-redirect-up.sh has to be re-run with it.
+# Most often this is the previous launch's mitmdump: cleanup() signals it but
+# does not wait for it, so right after quitting a pack it can still hold the
+# port. Hence "wait" first. A lasting clash needs another port, which
+# jbvip-redirect-up.sh and this launcher (JBVIP_PROXY_PORT) must both be given.
+# 8082 is only an example: no arithmetic on a user-supplied $PORT (see run_plain).
 port_up() { ss -ltn 2>/dev/null | grep -qE "[:.]$PORT[[:space:]]"; }
 if port_up; then
-  run_plain "port $PORT is already in use"
+  run_plain "port $PORT is already in use, probably by the last launch's proxy still closing; wait a few seconds and launch again. To use another port, e.g. 8082, run sudo $REPO/jbvip-redirect-up.sh 8082 and set JBVIP_PROXY_PORT=8082 in ~/.config/jbvip/relay.env"
 fi
 
 # --- pair a phone, if a relay is configured ---------------------------------
@@ -201,7 +215,7 @@ for _ in $(seq 1 60); do
   if ! kill -0 "$MITM" 2>/dev/null; then
     echo "jbvip: mitmdump exited during startup; see $STATE/mitm.log" >&2
     tail -n 20 "$STATE/mitm.log" >&2
-    run_plain "mitmdump exited during startup"
+    run_plain "mitmdump exited during startup; run 'mitmdump --version' in a terminal to check it, and install it with 'pipx install mitmproxy' if it is missing"
   fi
   if [ -f "$CA" ] && port_up; then ready=1; break; fi
   sleep 0.1
@@ -209,7 +223,7 @@ done
 if [ "$ready" != 1 ]; then
   echo "jbvip: proxy did not come up on 127.0.0.1:$PORT within 6s; see $STATE/mitm.log" >&2
   tail -n 20 "$STATE/mitm.log" >&2
-  run_plain "proxy did not come up on 127.0.0.1:$PORT within 6s"
+  run_plain "proxy did not come up on 127.0.0.1:$PORT within 6s; run 'mitmdump --version' in a terminal to check mitmdump, and install it with 'pipx install mitmproxy' if it is missing"
 fi
 
 # Per-game trust bundle: system CAs + mitmproxy CA.

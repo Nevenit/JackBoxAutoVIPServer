@@ -36,12 +36,12 @@ def relay_config_block() -> str:
     return "\n".join(lines[starts[0]: ends[0] + 1])
 
 
-def run_block(home: Path, env=None) -> str:
-    """Run the block under the launcher's own shell options and report the URL."""
+def run_block(home: Path, env=None, show: str = "JBVIP_RELAY_URL") -> str:
+    """Run the block under the launcher's own shell options and report a variable."""
     script = (
         "set -euo pipefail\n"
         + relay_config_block()
-        + '\nprintf "%s\\n" "${JBVIP_RELAY_URL-UNSET}"\n'
+        + f'\nprintf "%s\\n" "${{{show}-UNSET}}"\n'
     )
     child_env = {"HOME": str(home), "PATH": "/usr/bin:/bin"}
     child_env.update(env or {})
@@ -79,6 +79,18 @@ def test_a_real_environment_variable_still_works_without_a_config_file(tmp_path)
     assert run_block(
         tmp_path, env={"JBVIP_RELAY_URL": "https://env.example"}
     ) == "https://env.example"
+
+
+def test_the_proxy_port_comes_from_the_config_file_or_defaults_to_8081(tmp_path):
+    # A Steam launch option has no shell to export from, so a port other than the
+    # default has to be settable in relay.env like the URL is. That only works if
+    # PORT is read after the file has been sourced.
+    home = tmp_path / "with-config"
+    config = home / ".config" / "jbvip"
+    config.mkdir(parents=True)
+    (config / "relay.env").write_text("JBVIP_PROXY_PORT=9123\n")
+    assert run_block(home, show="PORT") == "9123"
+    assert run_block(tmp_path, show="PORT") == "8081"
 
 
 def test_the_config_file_no_longer_carries_a_pre_shared_secret():
@@ -448,6 +460,9 @@ def run_fallback(tmp_path, code: str, *, notify_send: bool = True):
 
 
 REDIRECT_CHECK = 'if [ ! -w "$CGROUP/cgroup.procs" ]; then'
+# What a notification about a mitmdump that would not start has to tell the user:
+# how to check it, and how to install it if that shows it is missing.
+MITMDUMP_HINTS = ("mitmdump --version", "pipx install mitmproxy")
 
 
 def test_a_missing_redirect_still_starts_the_game_and_says_why(tmp_path):
@@ -466,11 +481,17 @@ def test_a_missing_redirect_still_starts_the_game_and_says_why(tmp_path):
 def test_a_busy_proxy_port_still_starts_the_game(tmp_path):
     done, marker, notified = run_fallback(
         tmp_path,
-        "PORT=8081; port_up() { return 0; }\n" + launcher_if_block("if port_up; then"),
+        "PORT=8081; REPO=/r; port_up() { return 0; }\n" + launcher_if_block("if port_up; then"),
     )
     assert done.returncode == 0, done.stderr
     assert marker.exists()
-    assert "8081" in notified.read_text()
+    body = notified.read_text()
+    assert "8081" in body
+    # The fix as well as the problem. Usually the last launch's proxy is still
+    # closing; otherwise another port, which the redirect and this launcher
+    # have to be given alike, and relay.env is where a Steam user can set it.
+    for hint in ("wait a few seconds", "jbvip-redirect-up.sh", "JBVIP_PROXY_PORT", "relay.env"):
+        assert hint in body
 
 
 def test_the_game_still_starts_without_notify_send(tmp_path):
@@ -493,7 +514,9 @@ def test_a_missing_system_ca_bundle_still_starts_the_game(tmp_path):
     done, marker, notified = run_fallback(tmp_path, f'SYS_CA=""\n{check}')
     assert done.returncode == 0, done.stderr
     assert marker.exists()
-    assert "no system CA bundle found" in notified.read_text()
+    body = notified.read_text()
+    assert "no system CA bundle found" in body
+    assert "ca-certificates" in body  # and what to install
 
 
 def test_a_mitmdump_that_dies_on_startup_still_starts_the_game(tmp_path):
@@ -508,7 +531,10 @@ def test_a_mitmdump_that_dies_on_startup_still_starts_the_game(tmp_path):
     assert done.returncode == 0, done.stderr
     assert marker.exists()
     assert "the addon would not load" in done.stderr  # the log tail, as before
-    assert "mitmdump" in notified.read_text()
+    body = notified.read_text()
+    assert "mitmdump" in body
+    for hint in MITMDUMP_HINTS:
+        assert hint in body
 
 
 def test_a_proxy_that_never_comes_up_still_starts_the_game(tmp_path):
@@ -523,7 +549,10 @@ def test_a_proxy_that_never_comes_up_still_starts_the_game(tmp_path):
     assert done.returncode == 0, done.stderr
     assert marker.exists()
     assert "listening... eventually" in done.stderr  # the log tail, as before
-    assert "8081" in notified.read_text()
+    body = notified.read_text()
+    assert "8081" in body
+    for hint in MITMDUMP_HINTS:
+        assert hint in body
 
 
 def test_the_fallback_returns_the_games_exit_status_and_still_cleans_up(tmp_path):
