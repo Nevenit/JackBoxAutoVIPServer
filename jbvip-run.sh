@@ -114,6 +114,11 @@ MITM=""
 declare +x SESSION_ID="" SESSION_TOKEN=""
 
 cleanup() {
+  # First, so the proxy port frees while the clear below runs: the next pack's
+  # launcher needs it, and the clear can take seconds.
+  if [ -n "$MITM" ]; then
+    kill "$MITM" 2>/dev/null || true
+  fi
   # Clear the room, not the session: the session is tonight's and the next pack
   # reuses it (see NIGHT_FILE), but this pack has quit, so phones still
   # following it go back to "waiting" instead of showing a dead code.
@@ -129,9 +134,6 @@ cleanup() {
       chmod 600 "$LAST_LOG" 2>/dev/null || true
       echo "jbvip: the relay reported a problem; log kept at $LAST_LOG" >&2
     fi
-  fi
-  if [ -n "$MITM" ]; then
-    kill "$MITM" 2>/dev/null || true
   fi
   rm -rf "$STATE"
 }
@@ -157,10 +159,12 @@ bwrap --dev-bind / / --bind "$SYS_CA" "$CA_TARGET" -- true 2>/dev/null || run_pl
 
 # Most often this is the previous launch's mitmdump: cleanup() signals it but
 # does not wait for it, so right after quitting a pack it can still hold the
-# port. Hence "wait" first. A lasting clash needs another port, which
-# jbvip-redirect-up.sh and this launcher (JBVIP_PROXY_PORT) must both be given.
+# port. Hence up to 3 s of waiting here, and "wait" first in the notification.
+# A lasting clash needs another port, which jbvip-redirect-up.sh and this
+# launcher (JBVIP_PROXY_PORT) must both be given.
 # 8082 is only an example: no arithmetic on a user-supplied $PORT (see run_plain).
 port_up() { ss -ltn 2>/dev/null | grep -qE "[:.]$PORT[[:space:]]"; }
+for _ in $(seq 1 30); do port_up || break; sleep 0.1; done
 if port_up; then
   run_plain "port $PORT is already in use, probably by the last launch's proxy still closing; wait a few seconds and launch again. To use another port, e.g. 8082, run sudo $REPO/jbvip-redirect-up.sh 8082 and set JBVIP_PROXY_PORT=8082 in ~/.config/jbvip/relay.env"
 fi

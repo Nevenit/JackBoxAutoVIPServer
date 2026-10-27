@@ -315,6 +315,14 @@ def test_the_launcher_clears_the_room_on_the_way_out():
     assert "|| true" in cleanup
 
 
+def test_cleanup_frees_the_proxy_port_before_the_slow_clear():
+    # The next pack's launcher needs the port, and the clear can take seconds:
+    # python3 starting up, then an HTTPS round trip.
+    text = LAUNCHER.read_text()
+    cleanup = text[text.index("cleanup() {"):text.index("trap cleanup")]
+    assert cleanup.index('kill "$MITM"') < cleanup.index("host.session --clear")
+
+
 def ca_target_line() -> str:
     """The launcher's line that picks the file the trust bundle is mounted over."""
     line = next(
@@ -457,7 +465,8 @@ def launcher_if_block(first_line: str) -> str:
     return "\n".join(lines[start: lines.index(indent + "fi", start) + 1])
 
 
-def run_fallback(tmp_path, code: str, *, notify_send: bool = True, env=None):
+def run_fallback(tmp_path, code: str, *, notify_send: bool = True, env=None,
+                 falls_back: bool = True):
     """Run launcher `code` that should end in run_plain, as the launcher would.
 
     Returns (process, game_marker, notify_log). The game is a shell function
@@ -465,6 +474,7 @@ def run_fallback(tmp_path, code: str, *, notify_send: bool = True, env=None):
     never the real one: this machine's own notify-send would raise a real
     desktop notification. The stub logs its arguments, one per line; with
     notify_send=False there is none at all. `env` adds to the environment.
+    With falls_back=False the code must carry on instead.
     """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -491,7 +501,7 @@ def run_fallback(tmp_path, code: str, *, notify_send: bool = True, env=None):
     )
     # run_plain ends the launcher. Returning would carry on into mitmdump and
     # then start the game a second time.
-    assert "carried on" not in done.stdout
+    assert ("carried on" not in done.stdout) == falls_back, done.stderr
     return done, marker, notify_log
 
 
@@ -514,10 +524,18 @@ def test_a_missing_redirect_still_starts_the_game_and_says_why(tmp_path):
     assert "jbvip-redirect-up.sh" in body
 
 
+def busy_port_block() -> str:
+    """What the launcher does about a busy proxy port: everything after
+    port_up()'s definition, through the fallback's `fi`."""
+    lines = LAUNCHER.read_text().splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith("port_up() {")) + 1
+    return "\n".join(lines[start: lines.index("fi", start) + 1])
+
+
 def test_a_busy_proxy_port_still_starts_the_game(tmp_path):
     done, marker, notified = run_fallback(
         tmp_path,
-        "PORT=8081; REPO=/r; port_up() { return 0; }\n" + launcher_if_block("if port_up; then"),
+        "PORT=8081; REPO=/r; port_up() { return 0; }; sleep() { :; }\n" + busy_port_block(),
     )
     assert done.returncode == 0, done.stderr
     assert marker.exists()
@@ -528,6 +546,21 @@ def test_a_busy_proxy_port_still_starts_the_game(tmp_path):
     # have to be given alike, and relay.env is where a Steam user can set it.
     for hint in ("wait a few seconds", "jbvip-redirect-up.sh", "JBVIP_PROXY_PORT", "relay.env"):
         assert hint in body
+
+
+def test_a_port_that_frees_within_3_seconds_is_waited_for(tmp_path):
+    # Usually it is the last launch's mitmdump, still closing after its pack
+    # quit (a quick pack switch). Worth a moment, not a night without codes.
+    done, marker, notified = run_fallback(
+        tmp_path,
+        "PORT=8081; REPO=/r; looks=0\n"
+        'port_up() { looks=$((looks + 1)); [ "$looks" -le 3 ]; }\n'  # busy 3 times
+        + busy_port_block(),
+        falls_back=False,
+    )
+    assert done.returncode == 0, done.stderr
+    assert not marker.exists()  # the real launch starts the game, further on
+    assert not notified.exists()
 
 
 def test_the_game_still_starts_without_notify_send(tmp_path):
