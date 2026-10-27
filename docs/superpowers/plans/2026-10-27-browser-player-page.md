@@ -528,13 +528,19 @@ Outward-facing: ask the user before pushing and before touching the VPS. Do the 
 - [ ] **Step 2: Update the relay on `bne`:** `cd /opt/jbvip-relay && git fetch --depth 1 origin browser-player-page && git checkout -B browser-player-page FETCH_HEAD && /root/.local/bin/uv pip install -q --link-mode copy --python .venv/bin/python -r relay/requirements.txt && systemctl restart jbvip-relay`. Expected: `systemctl is-active jbvip-relay` prints `active`. From the desktop, `curl -s https://jb.tinypp.in/` contains `Scan the QR code on the host's screen to join.`
 - [ ] **Step 3: Remove the spike.** Restore the plain block in `/root/DockerContainers/Caddy/Caddyfile` by editing it **in place** (single-file bind mount; the inode gotcha in `crafty.md`): `jb.tinypp.in {` / `reverse_proxy 127.0.0.1:8479` / `}`. Run `docker exec caddy rm -r /srv/jbvip-spike`, then validate and reload Caddy. Expected: `curl -s https://jb.tinypp.in/j` contains `id="frame"` and not `THROWAWAY`.
 - [ ] **Step 4: Update `~/Documents/homelab/jbvip-relay.md`.** Record the deployed branch and commit, replace the "Throwaway test page" section with "removed <date>", and add the new routes and the 2-hour roomless rule.
-- [ ] **Step 5: Real-use checklist with the user:**
+- [ ] **Step 5: Point Steam at the branch.** Steam runs the main checkout, `/home/nevenit/Programming/Python/JackBoxAutoVIPServer`, which is still detached at `2391de4`: until it moves, every launch in the checklist below runs the old launcher. Move it to the branch tip, then delete `injection/node_modules` there, which becomes untracked once the branch's `.gitignore` stops listing it:
+  `git -C /home/nevenit/Programming/Python/JackBoxAutoVIPServer checkout --detach browser-player-page && rm -rf /home/nevenit/Programming/Python/JackBoxAutoVIPServer/injection/node_modules`
+  Expected: `git -C /home/nevenit/Programming/Python/JackBoxAutoVIPServer rev-parse HEAD` prints the same commit as `git rev-parse browser-player-page`, and `git -C /home/nevenit/Programming/Python/JackBoxAutoVIPServer status --short` prints nothing.
+- [ ] **Step 6: Real-use checklist with the user:**
   - Run `sudo ./jbvip-redirect-up.sh` if the PC has rebooted.
   - Launch a pack from Steam. The QR appears; scan it on Android; play; switch games.
   - Quit the pack: the phone shows waiting.
-  - Launch a game from the Megapicker: no QR, because the phone is still connected, and the phone follows.
-  - Join late on an iPhone through Invite.
+  - With the phone's page on screen, launch a game from the Megapicker: no QR, because the phone is still connected, and the phone follows.
+  - On a night that starts from the Megapicker, check that its first QR window appears above the Megapicker.
+  - Join late on an iPhone through Invite. Check that the bottom edge of the frame isn't covered (by the home indicator).
   - Refresh mid-game, then quit.
+  - Throughout, note whether a phone whose page is on screen ever sits on a dead stream: still showing a room, or still waiting, after the host has moved on.
+  - Pull-to-refresh any phone that still has the old spike page open (Step 3 removed the spike).
 
   Confirm in Steam's log that the Megapicker launch went through `jbvip-run.sh` with `-launchTo`. Confirm in the relay journal that `DELETE /sessions/<id>/code` appears on each quit and `DELETE /sessions/<id>` doesn't.
-- [ ] **Step 6:** Fix anything found (superpowers:systematic-debugging), then superpowers:finishing-a-development-branch.
+- [ ] **Step 7:** Fix anything found (superpowers:systematic-debugging), then superpowers:finishing-a-development-branch.
