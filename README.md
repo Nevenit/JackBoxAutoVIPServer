@@ -124,11 +124,12 @@ raw TLS socket that ignores proxy settings — only a kernel-level redirect catc
 it, and unlike injecting a library into the game it doesn't crash the AIR runtime.
 
 If a launch can't capture codes — the redirect from step 3 isn't up, there is no
-system CA bundle, the proxy port is already in use, or mitmdump won't start — the
-game still starts, just without room-code capture, and a desktop notification (if
-`notify-send` is installed) says what is wrong and how to fix it. The first
-three are caught before the QR window (below) would appear, so there is nothing
-to scan; a mitmdump that won't start is only noticed after it. A busy port is
+system CA bundle, bubblewrap can't start the game's sandbox, the proxy port is
+already in use, or mitmdump won't start — the game still starts, just without
+room-code capture, and a desktop notification (if `notify-send` is installed)
+says what is wrong and how to fix it. The first four are caught before the QR
+window (below) would appear, so there is nothing to scan; a mitmdump that won't
+start is only noticed after it. A busy port is
 usually the last launch's proxy still closing after you quit a pack: wait a few
 seconds and launch again.
 

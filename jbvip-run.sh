@@ -11,9 +11,10 @@
 # Blobcast variants, including websocket-only packs like Party Pack 1). Tear it
 # down with: sudo ./jbvip-redirect-down.sh
 #
-# When interception can't run (no redirect, no system CA bundle, the proxy port
-# taken, mitmdump failing to start) the game still starts, just without room
-# codes, and a desktop notification says why. See run_plain.
+# When interception can't run (no redirect, no system CA bundle, bubblewrap
+# failing, the proxy port taken, mitmdump failing to start) the game still
+# starts, just without room codes, and a desktop notification says why. See
+# run_plain.
 #
 # Use as a Steam launch option (one line):
 #     /ABSOLUTE/PATH/TO/jbvip-run.sh %command%
@@ -144,6 +145,10 @@ done
 # bubblewrap 0.13 refuses to mount onto a symlink, and Arch's CA path is one, so
 # mount over the file it points to. The game still opens it through the link.
 CA_TARGET="$(readlink -f "$SYS_CA")"
+# The game launch at the bottom is bwrap's first real run, and a failure there
+# ends the launcher with no game. So make the same mount now (about 1 ms), with
+# the system bundle standing in for ours, which doesn't exist yet.
+bwrap --dev-bind / / --bind "$SYS_CA" "$CA_TARGET" -- true 2>/dev/null || run_plain "bubblewrap can't start the game sandbox; run bwrap --dev-bind / / -- true in a terminal to see why"
 
 # Most often this is the previous launch's mitmdump: cleanup() signals it but
 # does not wait for it, so right after quitting a pack it can still hold the

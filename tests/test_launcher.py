@@ -312,13 +312,30 @@ def ca_target_line() -> str:
 
 
 def bwrap_line() -> str:
-    """The launcher's real bwrap invocation, line continuations joined."""
+    """The launcher's real bwrap invocation of the game, line continuations joined."""
     text = LAUNCHER.read_text().replace("\\\n", " ")
     line = next(
         one.strip() for one in text.splitlines()
-        if one.strip().startswith(("bwrap ", "exec bwrap "))
+        if one.strip().startswith(("bwrap ", "exec bwrap ")) and '"$BUNDLE"' in one
     )
     return line.removeprefix("exec ")
+
+
+# Before pairing, the launcher makes the game's mount with a stand-in for the
+# bundle, which does not exist yet: bwrap failing at the game launch itself
+# would end the launch with no game.
+BWRAP_PREFLIGHT = 'bwrap --dev-bind / / --bind "$SYS_CA" "$CA_TARGET" -- true'
+
+
+def bwrap_preflight_line() -> str:
+    """The launcher's check that bwrap can start, which falls back if not."""
+    line = next(
+        (one for one in LAUNCHER.read_text().splitlines()
+         if one.startswith(BWRAP_PREFLIGHT)),
+        None,
+    )
+    assert line, "jbvip-run.sh no longer checks that bwrap can start before pairing"
+    return line
 
 
 def symlinked_ca(tmp_path):
@@ -357,6 +374,10 @@ def test_the_game_reads_the_trust_bundle_through_a_symlinked_ca_path(tmp_path):
     script = (
         f'set -euo pipefail\nSYS_CA="{link}"\nBUNDLE="{bundle}"\n'
         f"{ca_target_line()}\n"
+        # The pre-flight makes the same mount, so it must pass here too, or
+        # every launch would lose its room codes.
+        'run_plain() { echo "fell back: $1" >&2; exit 3; }\n'
+        f"{bwrap_preflight_line()}\n"
         'set -- cat "$SYS_CA"\n'  # stands in for the game
         f"{bwrap_line()}\n"
     )
@@ -519,6 +540,24 @@ def test_a_missing_system_ca_bundle_still_starts_the_game(tmp_path):
     assert "ca-certificates" in body  # and what to install
 
 
+def test_a_bwrap_that_cannot_start_still_starts_the_game(tmp_path):
+    # Without user namespaces, say, or with bwrap not installed at all.
+    fake = tmp_path / "fake-bwrap"
+    fake.mkdir()
+    (fake / "bwrap").write_text(
+        "#!/bin/sh\necho 'bwrap: No permissions to create new namespace' >&2\nexit 1\n"
+    )
+    (fake / "bwrap").chmod(0o755)
+    done, marker, notified = run_fallback(
+        tmp_path,
+        f'PATH="{fake}:$PATH"; SYS_CA=/etc/ssl/cert.pem; CA_TARGET=/etc/ssl/cert.pem\n'
+        + bwrap_preflight_line(),
+    )
+    assert done.returncode == 0, done.stderr
+    assert marker.exists()
+    assert "bwrap --dev-bind / / -- true" in notified.read_text()  # how to see why
+
+
 def test_a_mitmdump_that_dies_on_startup_still_starts_the_game(tmp_path):
     state = tmp_path / "state"
     state.mkdir()
@@ -576,7 +615,7 @@ def test_interception_checks_run_before_the_pairing_window():
     # capture a room code.
     text = LAUNCHER.read_text()
     pairing = text.index("host.qr_window")
-    for check in (REDIRECT_CHECK, "CA_TARGET=", "if port_up; then"):
+    for check in (REDIRECT_CHECK, "CA_TARGET=", BWRAP_PREFLIGHT, "if port_up; then"):
         assert text.index(check) < pairing
 
 
