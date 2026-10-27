@@ -2597,7 +2597,7 @@ This is the step that cannot be automated. Write a throwaway driver in the scrat
 ```bash
 cat > /tmp/claude-1000/-home-nevenit-Programming-C--JackBoxAutoVIPServer/c3328ef4-0d4b-46ad-aba9-ef9790c59c46/scratchpad/qr-demo.py <<'PY'
 import sys
-sys.path.insert(0, "/home/nevenit/Programming/C#/JackBoxAutoVIPServer")
+sys.path.insert(0, "/home/nevenit/Programming/Python/JackBoxAutoVIPServer")
 from host.qr_window import show
 from host.session import SessionCredentials
 

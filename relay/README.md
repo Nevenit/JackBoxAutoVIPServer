@@ -34,7 +34,7 @@ fetches a managed build if the distro's is too old.
 ## Install
 
 ```bash
-sudo git clone https://github.com/username/JackBoxAutoVIPServer.git /opt/jbvip-relay
+sudo git clone https://github.com/Nevenit/JackBoxAutoVIPServer.git /opt/jbvip-relay
 cd /opt/jbvip-relay
 sudo uv venv --python '>=3.11'
 sudo uv pip install -r relay/requirements.txt
