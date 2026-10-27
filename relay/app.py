@@ -8,15 +8,18 @@ import asyncio
 import json
 import logging
 import time
+from pathlib import Path
 
 from starlette.applications import Starlette
 from starlette.responses import (
+    FileResponse,
     HTMLResponse,
     JSONResponse,
     Response,
     StreamingResponse,
 )
-from starlette.routing import Route
+from starlette.routing import Mount, Route
+from starlette.staticfiles import StaticFiles
 
 from relay.state import (
     MAX_SUBSCRIBERS_PER_SESSION,
@@ -40,14 +43,14 @@ CREATE_LIMIT_PER_MINUTE = 30
 # must never be able to lock another game night out.
 PUBLISH_LIMIT_PER_MINUTE = 60
 
-# The subscriber token lives in the URL fragment, which browsers never
-# transmit, so nothing server-side — including this page — can see it.
-_JOIN_PAGE = (
+STATIC_DIR = Path(__file__).parent / "static"
+
+_LANDING_PAGE = (
     "<!doctype html><meta charset=utf-8>"
     "<meta name=viewport content='width=device-width,initial-scale=1'>"
-    "<title>jbvip</title>"
+    "<title>Jackbox night</title>"
     "<p style='font:1rem/1.5 system-ui;margin:2rem'>"
-    "This QR code pairs a phone with a Jackbox host. Open it in the jbvip app."
+    "Scan the QR code on the host's screen to join."
 )
 
 _UNAUTHORIZED = {"error": "unauthorized"}
@@ -302,8 +305,16 @@ class Relay:
             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
         )
 
-    async def join_page(self, request):
-        return HTMLResponse(_JOIN_PAGE, headers={"Cache-Control": "no-store"})
+
+async def landing_page(request):
+    return HTMLResponse(_LANDING_PAGE, headers={"Cache-Control": "no-store"})
+
+
+async def player_page(request):
+    # The subscriber token lives in the URL fragment, which browsers never
+    # transmit, so nothing server-side — including this route — can see it.
+    return FileResponse(STATIC_DIR / "player.html",
+                        headers={"Cache-Control": "no-store"})
 
 
 def build_app(state: RelayState, *, create_limiter=None,
@@ -328,7 +339,9 @@ def build_app(state: RelayState, *, create_limiter=None,
                   methods=["DELETE"]),
             Route("/sessions/{session_id}/subscribe", relay.subscribe,
                   methods=["GET"]),
-            Route("/j", relay.join_page, methods=["GET"]),
+            Route("/", landing_page, methods=["GET"]),
+            Route("/j", player_page, methods=["GET"]),
+            Mount("/static", StaticFiles(directory=STATIC_DIR)),
         ]
     )
     app.state.relay = relay

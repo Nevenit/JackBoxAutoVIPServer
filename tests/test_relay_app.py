@@ -1,9 +1,12 @@
 import asyncio
 import contextlib
+import re
 import time
+from pathlib import Path
 
 import pytest
 
+import relay.app
 from relay.app import Relay, build_app
 from relay.state import (
     MAX_SESSIONS,
@@ -716,14 +719,37 @@ async def test_releasing_a_session_forgets_its_rate_limiter():
     assert session.session_id not in relay._publish_limiters
 
 
-# --- the join page and logging ------------------------------------------
+# --- the pages and logging ----------------------------------------------
 
-async def test_the_join_page_is_served_without_credentials():
+async def test_the_player_page_is_served_without_credentials_and_never_cached():
     _, app = make()
     async with serving(app) as http:
         response = await http.get("/j")
     assert response.status_code == 200
-    assert "jbvip" in response.text
+    assert response.headers["content-type"].startswith("text/html")
+    assert response.headers["cache-control"] == "no-store"
+    assert 'id="frame"' in response.text
+
+
+async def test_the_bare_domain_says_to_scan_the_qr():
+    _, app = make()
+    async with serving(app) as http:
+        response = await http.get("/")
+    assert response.status_code == 200
+    assert "Scan the QR code on the host's screen to join." in response.text
+
+
+async def test_the_qr_library_is_served_by_the_relay_itself():
+    _, app = make()
+    async with serving(app) as http:
+        response = await http.get("/static/qrcode.min.js")
+    assert response.status_code == 200
+
+
+def test_the_player_page_loads_no_third_party_scripts():
+    html = (Path(relay.app.__file__).parent / "static" / "player.html").read_text()
+    sources = re.findall(r"<script[^>]*\bsrc=\"([^\"]+)\"", html)
+    assert sources and all(src.startswith("/static/") for src in sources)
 
 
 async def test_the_relay_logs_neither_a_room_code_nor_a_token(caplog):

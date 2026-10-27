@@ -1,0 +1,11 @@
+{
+  "name": "jbvip-browser-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node player.test.mjs"
+  },
+  "devDependencies": {
+    "puppeteer-core": "^23.0.0"
+  }
+}

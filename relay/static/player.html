@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#16161a">
+<title>Jackbox night</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #16161a; color: #eee;
+               font: 15px/1.4 system-ui, -apple-system, sans-serif; }
+  #app { position: fixed; inset: 0; display: flex; flex-direction: column;
+         padding-top: env(safe-area-inset-top); }
+  #bar { flex: none; display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+         background: #24242b; }
+  #code { font-weight: 700; letter-spacing: .08em; }
+  #status { flex: 1; color: #aaa; font-size: 13px;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #main { flex: 1; position: relative; }
+  #frame { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #fff; }
+  .panel { position: absolute; inset: 0; box-sizing: border-box; overflow: auto; padding: 20px;
+           display: flex; flex-direction: column; align-items: center; justify-content: center;
+           gap: 14px; text-align: center; background: #16161a; }
+  button { font: inherit; color: inherit; background: #34343d; border: 0; border-radius: 8px;
+           padding: 8px 14px; }
+  .primary { background: #2f6fed; color: #fff; padding: 10px 22px; }
+  /* 16px or more, or iOS zooms in on focus */
+  input { font: inherit; font-size: 16px; color: inherit; width: min(260px, 80vw);
+          box-sizing: border-box; padding: 10px; border: 1px solid #444; border-radius: 8px;
+          background: #1e1e24; text-align: center; text-transform: uppercase; }
+  #qr { width: min(72vw, 300px); image-rendering: pixelated; }
+  a { color: #8ab4ff; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="bar">
+    <span id="code"></span>
+    <span id="status"></span>
+    <button id="invite-btn" type="button">Invite</button>
+    <button id="menu-btn" type="button" aria-label="Menu">⋯</button>
+  </div>
+  <div id="main">
+    <iframe id="frame" title="Jackbox" hidden
+            allow="screen-wake-lock; autoplay; fullscreen; clipboard-write"></iframe>
+    <form id="name-panel" class="panel" hidden>
+      <label for="name-input">Your name in the games</label>
+      <input id="name-input" maxlength="12" required autocomplete="off"
+             autocapitalize="characters" spellcheck="false">
+      <button id="name-save" class="primary">Join</button>
+    </form>
+    <div id="wait-panel" class="panel" hidden>
+      <p id="wait-text"></p>
+    </div>
+    <div id="invite-panel" class="panel" hidden>
+      <b>Invite a friend</b>
+      <span>Point their phone's camera at this.</span>
+      <img id="qr" alt="QR code of this page's link">
+      <button id="share-btn" type="button">Share link…</button>
+      <button id="invite-close" type="button">Close</button>
+    </div>
+    <div id="menu-panel" class="panel" hidden>
+      <button id="rename-btn" type="button">Change name (from the next game)</button>
+      <button id="reload-btn" type="button">Reload game</button>
+      <a id="direct-link" target="_blank" rel="noopener">Open this room in jackbox.tv</a>
+      <button id="menu-close" type="button">Close</button>
+    </div>
+  </div>
+</div>
+<script src="/static/qrcode.min.js"></script>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const frame = $("frame");
+
+const NAME_KEY = "jbvip-name";
+const KEEPALIVE_MS = 20000; // the relay's keepalive interval
+const MAX_RETRY_MS = 15000;
+// The bar's status for each connection state; "live" says "in game" or "waiting".
+const STATUS = {
+  none: "no link",
+  connecting: "connecting…",
+  retrying: "reconnecting…",
+  ended: "night ended",
+  refused: "bad link",
+};
+// What the waiting screen says instead of "waiting" when the link itself is the problem.
+const PROBLEM = {
+  none: "Open this from the QR code on the host's screen.",
+  ended: "This game night has ended.",
+  refused: "This link doesn't work. Scan the QR code on the host's screen again.",
+};
+
+let session = null;     // {id, token} from the #fragment
+let name = loadName();
+let connection = "none"; // none | connecting | live | retrying | ended | refused
+let latest = null;      // the room the relay last announced; null while there's none
+let current = null;     // the room in the frame
+let overlay = null;     // id of the panel open on top: invite, menu or rename
+let stream = null;      // AbortController of the open subscription
+let retryTimer = 0;
+let retryDelay = 1000;
+
+function loadName() {
+  try { return localStorage.getItem(NAME_KEY) || ""; } catch { return ""; }
+}
+
+function storeName(value) {
+  try { localStorage.setItem(NAME_KEY, value); } catch {} // blocked storage: kept for this visit
+}
+
+// "#<session_id>.<subscriber_token>": both are URL-safe base64, so neither has a dot.
+function parseHash() {
+  const match = /^#([\w-]+)\.([\w-]+)$/.exec(location.hash);
+  return match && { id: match[1], token: match[2] };
+}
+
+// 404 or 401: the night is over or the link is wrong, and retrying can't change that.
+const finished = () => connection === "ended" || connection === "refused";
+
+function roomUrl(code) {
+  return "https://jackbox.tv/?code=" + encodeURIComponent(code) +
+         "&name=" + encodeURIComponent(name);
+}
+
+function render() {
+  const base = current ? null : session && !name && !finished() ? "name-panel" : "wait-panel";
+  const shown = overlay || base;
+  for (const id of ["name-panel", "wait-panel", "invite-panel", "menu-panel"]) {
+    $(id).hidden = id !== shown;
+  }
+  frame.hidden = !current;
+  $("code").textContent = current || "";
+  $("status").textContent =
+    connection === "live" ? (current ? "in game" : "waiting") : STATUS[connection];
+  $("wait-text").textContent = PROBLEM[connection] || "Waiting for the host to pick a game…";
+  $("invite-btn").hidden = !session;
+  $("reload-btn").hidden = $("direct-link").hidden = !current;
+}
+
+// Frame a room, or empty the frame for null. The room already in the frame is left
+// alone: a reconnect re-sends it, and reloading would pull the player out of the game.
+function show(code) {
+  if (code === current) return;
+  current = code;
+  if (!code) return frame.removeAttribute("src");
+  const url = roomUrl(code);
+  frame.src = url;
+  $("direct-link").href = url;
+}
+
+// A room code from the relay, or null when the host has no room.
+function onCode(code) {
+  latest = code;
+  if (name) show(code); // before the first name, the room waits in `latest`
+  render();
+}
+
+// Server-sent events off a fetch body: blank-line-separated, and only `data:` lines matter.
+async function readEvents(body) {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) return;
+    buffer += decoder.decode(value, { stream: true });
+    let end;
+    while ((end = buffer.indexOf("\n\n")) >= 0) {
+      for (const line of buffer.slice(0, end).split("\n")) {
+        if (line.startsWith("data:")) onCode(JSON.parse(line.slice(5)).code);
+      }
+      buffer = buffer.slice(end + 2);
+    }
+  }
+}
+
+function stop() {
+  clearTimeout(retryTimer);
+  if (stream) stream.abort();
+  stream = null;
+}
+
+async function subscribe() {
+  stop();
+  const controller = (stream = new AbortController());
+  let openedAt = 0;
+  try {
+    const response = await fetch("/sessions/" + session.id + "/subscribe", {
+      headers: { Authorization: "Bearer " + session.token },
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    if (response.status === 404 || response.status === 401) {
+      connection = response.status === 404 ? "ended" : "refused"; // a game in the frame stays
+      return render();
+    }
+    if (!response.ok) throw new Error("HTTP " + response.status);
+    openedAt = Date.now();
+    connection = "live";
+    render();
+    await readEvents(response.body);
+  } catch {
+    // A network failure or a bad response: retried below, unless we aborted it ourselves.
+  }
+  if (controller.signal.aborted) return; // closed on purpose: page hidden, or a new session
+  // The stream ended. The night may be over (the retry's 404 will say so), or a newer phone
+  // took this one's place on the relay. Only a stream that outlived a keepalive resets the
+  // backoff, so more phones than the relay holds can't evict each other every second.
+  if (openedAt && Date.now() - openedAt >= KEEPALIVE_MS) retryDelay = 1000;
+  connection = "retrying";
+  render();
+  retryTimer = setTimeout(subscribe, retryDelay);
+  retryDelay = Math.min(retryDelay * 2, MAX_RETRY_MS);
+}
+
+function keepAwake() {
+  navigator.wakeLock?.request("screen").catch(() => {}); // a refusal is fine
+}
+
+function onVisibilityChange() {
+  if (document.visibilityState === "hidden") return stop(); // a sleeping phone holds no stream
+  keepAwake();
+  if (session && !finished()) subscribe();
+}
+
+// Begin, and begin again when a re-scan changes only the #fragment (no reload).
+function start() {
+  stop();
+  session = parseHash();
+  connection = session ? "connecting" : "none";
+  latest = null;
+  overlay = null;
+  retryDelay = 1000;
+  show(null);
+  render();
+  if (session && document.visibilityState !== "hidden") subscribe();
+}
+
+$("name-panel").onsubmit = (event) => {
+  event.preventDefault();
+  const value = $("name-input").value.trim().toUpperCase().slice(0, 12);
+  if (!value) return;
+  name = value;
+  storeName(value);
+  overlay = null;
+  keepAwake();
+  show(latest); // frames a room that came before the first name; a rename changes nothing
+  render();
+};
+
+$("rename-btn").onclick = () => {
+  $("name-input").value = name;
+  $("name-save").textContent = "Save";
+  overlay = "name-panel";
+  render();
+};
+
+$("invite-btn").onclick = () => {
+  const qr = qrcode(0, "M");
+  qr.addData(location.href);
+  qr.make();
+  $("qr").src = qr.createDataURL(8);
+  $("share-btn").textContent = "Share link…";
+  overlay = "invite-panel";
+  render();
+};
+
+$("share-btn").onclick = async () => {
+  try {
+    if (navigator.share) return await navigator.share({ title: "Jackbox night", url: location.href });
+    await navigator.clipboard.writeText(location.href);
+    $("share-btn").textContent = "Link copied";
+  } catch {} // the share sheet was dismissed, or the clipboard refused
+};
+
+$("menu-btn").onclick = () => {
+  overlay = overlay === "menu-panel" ? null : "menu-panel";
+  render();
+};
+
+$("reload-btn").onclick = () => {
+  frame.src = frame.src; // the same URL again: jackbox.tv reconnects, as the code is unchanged
+  overlay = null;
+  render();
+};
+
+$("menu-close").onclick = $("invite-close").onclick = () => {
+  overlay = null;
+  render();
+};
+
+window.addEventListener("hashchange", start);
+document.addEventListener("visibilitychange", onVisibilityChange);
+start();
+keepAwake(); // a returning phone has no Join tap
+</script>
+</body>
+</html>
