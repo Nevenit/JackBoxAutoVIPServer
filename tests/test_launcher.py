@@ -280,12 +280,12 @@ def test_a_relay_that_cannot_be_reached_does_not_abort_the_launch():
     assert launch.strip().startswith("if "), launch
 
 
-def test_the_launcher_deletes_its_session_on_the_way_out():
+def test_the_launcher_clears_the_room_on_the_way_out():
     text = LAUNCHER.read_text()
-    assert "host.session --delete" in text
+    assert "host.session --clear" in text
     # Before $STATE is removed, and never allowed to fail the trap.
     cleanup = text[text.index("cleanup() {"):text.index("trap cleanup")]
-    assert cleanup.index("host.session --delete") < cleanup.index('rm -rf "$STATE"')
+    assert cleanup.index("host.session --clear") < cleanup.index('rm -rf "$STATE"')
     assert "|| true" in cleanup
 
 
@@ -391,6 +391,172 @@ def test_only_the_game_joins_the_redirected_cgroup(tmp_path):
     joined = (cgroup / "cgroup.procs").read_text().split()
     assert joined == [pids["game"]]
     assert pids["launcher"] not in joined
+
+
+def launcher_function(name: str) -> str:
+    """A function of jbvip-run.sh: from `name() {` to its first `}` line."""
+    lines = LAUNCHER.read_text().splitlines()
+    starts = [i for i, line in enumerate(lines) if line.startswith(f"{name}() {{")]
+    assert starts, f"jbvip-run.sh no longer defines {name}()"
+    return "\n".join(lines[starts[0]: lines.index("}", starts[0]) + 1])
+
+
+def launcher_if_block(first_line: str) -> str:
+    """One `if` of jbvip-run.sh: that exact line down to the `fi` at its indent."""
+    lines = LAUNCHER.read_text().splitlines()
+    assert first_line in lines, f"jbvip-run.sh no longer has: {first_line}"
+    start = lines.index(first_line)
+    indent = first_line[: len(first_line) - len(first_line.lstrip())]
+    return "\n".join(lines[start: lines.index(indent + "fi", start) + 1])
+
+
+def run_fallback(tmp_path, code: str, *, notify_send: bool = True):
+    """Run launcher `code` that should end in run_plain, as the launcher would.
+
+    Returns (process, game_marker, notify_log). The game is a shell function
+    that leaves the marker, so the marker says whether the game started. PATH is
+    never the real one: this machine's own notify-send would raise a real
+    desktop notification. The stub logs its arguments, one per line; with
+    notify_send=False there is none at all.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    notify_log = tmp_path / "notify.log"
+    if notify_send:
+        stub = bin_dir / "notify-send"
+        stub.write_text(f'#!/bin/sh\nprintf "%s\\n" "$@" >> "{notify_log}"\n')
+        stub.chmod(0o755)
+    marker = tmp_path / "game-started"
+    script = (
+        "set -euo pipefail\n"
+        f'game() {{ : > "{marker}"; }}\nGAME=(game)\n'
+        + launcher_function("run_plain")
+        + f"\n{code}\n"
+        'echo "the launcher carried on"\n'
+    )
+    done = subprocess.run(
+        [shutil.which("bash"), "-c", script], capture_output=True, text=True,
+        env={
+            "HOME": str(tmp_path),
+            "PATH": f"{bin_dir}:/usr/bin:/bin" if notify_send else str(bin_dir),
+        },
+    )
+    # run_plain ends the launcher. Returning would carry on into mitmdump and
+    # then start the game a second time.
+    assert "carried on" not in done.stdout
+    return done, marker, notify_log
+
+
+REDIRECT_CHECK = 'if [ ! -w "$CGROUP/cgroup.procs" ]; then'
+
+
+def test_a_missing_redirect_still_starts_the_game_and_says_why(tmp_path):
+    done, marker, notified = run_fallback(
+        tmp_path,
+        "PORT=8081; REPO=/r; CGROUP=/nonexistent\n" + launcher_if_block(REDIRECT_CHECK),
+    )
+    assert done.returncode == 0, done.stderr
+    assert marker.exists()
+    assert "starting the game without room-code capture" in done.stderr
+    flag, app, summary, body = notified.read_text().splitlines()
+    assert (flag, app, summary) == ("-a", "jbvip", "Jackbox: no room codes this time")
+    assert "jbvip-redirect-up.sh" in body
+
+
+def test_a_busy_proxy_port_still_starts_the_game(tmp_path):
+    done, marker, notified = run_fallback(
+        tmp_path,
+        "PORT=8081; port_up() { return 0; }\n" + launcher_if_block("if port_up; then"),
+    )
+    assert done.returncode == 0, done.stderr
+    assert marker.exists()
+    assert "8081" in notified.read_text()
+
+
+def test_the_game_still_starts_without_notify_send(tmp_path):
+    done, marker, notified = run_fallback(
+        tmp_path,
+        "PORT=8081; REPO=/r; CGROUP=/nonexistent\n" + launcher_if_block(REDIRECT_CHECK),
+        notify_send=False,
+    )
+    assert done.returncode == 0, done.stderr
+    assert marker.exists()
+    assert "jbvip-redirect-up.sh" in done.stderr  # the reason still reaches stderr
+    assert not notified.exists()
+
+
+def test_a_missing_system_ca_bundle_still_starts_the_game(tmp_path):
+    check = next(
+        line for line in LAUNCHER.read_text().splitlines()
+        if line.startswith('[ -n "$SYS_CA" ]')
+    )
+    done, marker, notified = run_fallback(tmp_path, f'SYS_CA=""\n{check}')
+    assert done.returncode == 0, done.stderr
+    assert marker.exists()
+    assert "no system CA bundle found" in notified.read_text()
+
+
+def test_a_mitmdump_that_dies_on_startup_still_starts_the_game(tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "mitm.log").write_text("ImportError: the addon would not load\n")
+    done, marker, notified = run_fallback(
+        tmp_path,
+        f'STATE="{state}"\ntrue & MITM=$!\nwait "$MITM"\n'  # a pid that is gone
+        + launcher_if_block('  if ! kill -0 "$MITM" 2>/dev/null; then'),
+    )
+    assert done.returncode == 0, done.stderr
+    assert marker.exists()
+    assert "the addon would not load" in done.stderr  # the log tail, as before
+    assert "mitmdump" in notified.read_text()
+
+
+def test_a_proxy_that_never_comes_up_still_starts_the_game(tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "mitm.log").write_text("listening... eventually\n")
+    done, marker, notified = run_fallback(
+        tmp_path,
+        f'STATE="{state}"; PORT=8081; ready=0\n'
+        + launcher_if_block('if [ "$ready" != 1 ]; then'),
+    )
+    assert done.returncode == 0, done.stderr
+    assert marker.exists()
+    assert "listening... eventually" in done.stderr  # the log tail, as before
+    assert "8081" in notified.read_text()
+
+
+def test_the_fallback_returns_the_games_exit_status_and_still_cleans_up(tmp_path):
+    # Jackbox games exit non-zero routinely and that status is what Steam sees.
+    # It must come out of run_plain and the EXIT trap unchanged, and the trap
+    # must still run: it stops mitmdump and removes $STATE.
+    state = tmp_path / "run-state"
+    state.mkdir(mode=0o700)
+    done, _, _ = run_fallback(
+        tmp_path,
+        f'umask 077\nSTATE="{state}"\nGAME=(sh -c "exit 7")\n'
+        + cleanup_block()
+        + '\nrun_plain "for the test"',
+    )
+    assert done.returncode == 7, done.stderr
+    assert not state.exists()
+
+
+def test_interception_checks_run_before_the_pairing_window():
+    # Asking someone to scan a QR code is pointless on a night that cannot
+    # capture a room code.
+    text = LAUNCHER.read_text()
+    pairing = text.index("host.qr_window")
+    for check in (REDIRECT_CHECK, "CA_TARGET=", "if port_up; then"):
+        assert text.index(check) < pairing
+
+
+def test_the_qr_window_is_handed_tonights_night_file():
+    text = LAUNCHER.read_text().replace("\\\n", " ")
+    assert 'NIGHT_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/jbvip/night.json"' in text
+    assert '--night-file "$NIGHT_FILE"' in next(
+        line for line in text.splitlines() if "host.qr_window" in line
+    )
 
 
 @pytest.mark.parametrize("variable", ["JBVIP_RELAY_URL"])

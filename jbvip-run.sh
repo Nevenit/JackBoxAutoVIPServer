@@ -11,12 +11,42 @@
 # Blobcast variants, including websocket-only packs like Party Pack 1). Tear it
 # down with: sudo ./jbvip-redirect-down.sh
 #
+# When interception can't run (no redirect, no system CA bundle, the proxy port
+# taken, mitmdump failing to start) the game still starts, just without room
+# codes, and a desktop notification says why. See run_plain.
+#
 # Use as a Steam launch option (one line):
 #     /ABSOLUTE/PATH/TO/jbvip-run.sh %command%
 #
 # Requirements: bubblewrap, mitmproxy, and the redirect above (needs sudo once
 # per session). The game itself is never modified or injected into.
 set -euo pipefail
+
+# The game's command line. An array because "$@" inside a function is that
+# function's own arguments, and run_plain needs the game's.
+GAME=("$@")
+
+# Anything that stops us capturing room codes ends here instead of in `exit 1`:
+# a launcher that keeps the game from starting is worse than none, and a missing
+# redirect, a taken port or a broken mitmdump must never cost a game night.
+# Under Steam stderr goes nowhere anyone looks, so the reason is also sent as a
+# desktop notification.
+#
+# Runs the game directly (no redirect, proxy or bwrap) in the foreground, and
+# exits with ITS status (what Steam sees; Jackbox games exit non-zero routinely).
+# `exit` and not `exec`, so the EXIT trap still stops mitmdump and removes the
+# state dir. The status is captured rather than left to `set -e`, which is off
+# inside an `if` condition or a `||` list, so it is the game's wherever this is
+# called from.
+run_plain() {
+  echo "jbvip: $1; starting the game without room-code capture" >&2
+  if command -v notify-send >/dev/null 2>&1; then
+    notify-send -a jbvip "Jackbox: no room codes this time" "$1" || true
+  fi
+  local rc=0
+  "${GAME[@]}" || rc=$?
+  exit "$rc"
+}
 
 PORT="${JBVIP_PROXY_PORT:-8081}"
 REPO="$(dirname "$(readlink -f "$0")")"
@@ -35,8 +65,7 @@ CGROUP=/sys/fs/cgroup/net_cls/jbvip
 
 # The transparent redirect must be active, or the game's traffic never reaches us.
 if [ ! -w "$CGROUP/cgroup.procs" ]; then
-  echo "jbvip: redirect not set up. Run:  sudo $REPO/jbvip-redirect-up.sh $PORT" >&2
-  exit 1
+  run_plain "redirect not set up (run: sudo $REPO/jbvip-redirect-up.sh $PORT)"
 fi
 
 # Private, per-run state dir (0700) so the trust bundle / log can't be pre-created
@@ -67,13 +96,15 @@ REDACT_CODES='s#(/rooms/)[A-Za-z0-9]+#\1<redacted>#g'
 MITM=""
 
 cleanup() {
-  # Free the session immediately rather than waiting four hours for it to
-  # expire. `${SESSION_ID:-}` because the trap can fire before that line ran.
+  # Clear the room, not the session: the session is tonight's and the next pack
+  # reuses it (see NIGHT_FILE), but this pack has quit, so phones still
+  # following it go back to "waiting" instead of showing a dead code.
+  # `${SESSION_ID:-}` because the trap can fire before that line ran.
   if [ -n "${SESSION_ID:-}" ]; then
     JBVIP_RELAY_URL="$JBVIP_RELAY_URL" \
     JBVIP_SESSION_ID="$SESSION_ID" \
     JBVIP_SESSION_TOKEN="$SESSION_TOKEN" \
-      python3 -m host.session --delete >/dev/null 2>&1 || true
+      python3 -m host.session --clear >/dev/null 2>&1 || true
   fi
   if [ -f "$STATE/mitm.log" ] && grep -qF "$LOG_MARKER" "$STATE/mitm.log"; then
     if mkdir -p "$(dirname "$LAST_LOG")" 2>/dev/null &&
@@ -89,6 +120,27 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# The CA bundle and port checks come before the pairing window below, like the
+# redirect check above: on a night that can't capture a room code there is
+# nothing to ask anyone to scan.
+
+# The CA file the game's statically-linked libcurl reads (it ignores SSL_CERT_FILE).
+SYS_CA=""
+for f in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do
+  [ -f "$f" ] && SYS_CA="$f" && break
+done
+[ -n "$SYS_CA" ] || run_plain "no system CA bundle found"
+# bubblewrap 0.13 refuses to mount onto a symlink, and Arch's CA path is one, so
+# mount over the file it points to. The game still opens it through the link.
+CA_TARGET="$(readlink -f "$SYS_CA")"
+
+# Something else owns the proxy port. JBVIP_PROXY_PORT picks another one, and
+# jbvip-redirect-up.sh has to be re-run with it.
+port_up() { ss -ltn 2>/dev/null | grep -qE "[:.]$PORT[[:space:]]"; }
+if port_up; then
+  run_plain "port $PORT is already in use"
+fi
+
 # --- pair a phone, if a relay is configured ---------------------------------
 # Deliberately before mitmdump and the game: fighting a fullscreen game for
 # stacking order under Wayland is unreliable, and there is a natural gap here.
@@ -96,12 +148,17 @@ trap cleanup EXIT INT TERM
 SESSION_ID=""
 SESSION_TOKEN=""
 SESSION_ENV="$STATE/session.env"
+# The session is tonight's, not this launch's: the QR window resumes the one
+# saved here (or makes one and saves it), and only shows its QR code when no
+# phone is connected yet, so switching packs doesn't mean scanning again.
+NIGHT_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/jbvip/night.json"
 if [ -n "$JBVIP_RELAY_URL" ]; then
   # The `if` matters: this exits non-zero when the relay is unreachable, and
   # under `set -e` a bare call would end the script and the game would never
   # launch. A dead VPS must never cost a game night.
   if python3 -m host.qr_window --base-url "$JBVIP_RELAY_URL" \
-       --session-env "$SESSION_ENV"; then
+       --session-env "$SESSION_ENV" \
+       --night-file "$NIGHT_FILE"; then
     if [ -r "$SESSION_ENV" ]; then
       # shellcheck source=/dev/null
       . "$SESSION_ENV"
@@ -112,22 +169,6 @@ if [ -n "$JBVIP_RELAY_URL" ]; then
   else
     echo "jbvip: no relay session; the room code stays LAN-only" >&2
   fi
-fi
-
-# The CA file the game's statically-linked libcurl reads (it ignores SSL_CERT_FILE).
-SYS_CA=""
-for f in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do
-  [ -f "$f" ] && SYS_CA="$f" && break
-done
-[ -n "$SYS_CA" ] || { echo "jbvip: no system CA bundle found" >&2; exit 1; }
-# bubblewrap 0.13 refuses to mount onto a symlink, and Arch's CA path is one, so
-# mount over the file it points to. The game still opens it through the link.
-CA_TARGET="$(readlink -f "$SYS_CA")"
-
-port_up() { ss -ltn 2>/dev/null | grep -qE "[:.]$PORT[[:space:]]"; }
-if port_up; then
-  echo "jbvip: port $PORT already in use; refusing to start. Set JBVIP_PROXY_PORT to a free port (and re-run jbvip-redirect-up.sh with it)." >&2
-  exit 1
 fi
 
 # Transparent proxy: the kernel redirect (jbvip-redirect-up.sh) sends the game's
@@ -160,7 +201,7 @@ for _ in $(seq 1 60); do
   if ! kill -0 "$MITM" 2>/dev/null; then
     echo "jbvip: mitmdump exited during startup; see $STATE/mitm.log" >&2
     tail -n 20 "$STATE/mitm.log" >&2
-    exit 1
+    run_plain "mitmdump exited during startup"
   fi
   if [ -f "$CA" ] && port_up; then ready=1; break; fi
   sleep 0.1
@@ -168,7 +209,7 @@ done
 if [ "$ready" != 1 ]; then
   echo "jbvip: proxy did not come up on 127.0.0.1:$PORT within 6s; see $STATE/mitm.log" >&2
   tail -n 20 "$STATE/mitm.log" >&2
-  exit 1
+  run_plain "proxy did not come up on 127.0.0.1:$PORT within 6s"
 fi
 
 # Per-game trust bundle: system CAs + mitmproxy CA.
