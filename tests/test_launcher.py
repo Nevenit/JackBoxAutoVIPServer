@@ -354,6 +354,45 @@ def test_the_game_reads_the_trust_bundle_through_a_symlinked_ca_path(tmp_path):
     assert real.read_text() == "system CAs\n"  # only the game's view changed
 
 
+_GAME_START = 'mv -f "$tmpbundle" "$BUNDLE"'
+
+
+def game_launch_block() -> str:
+    """Everything the launcher runs once the trust bundle is ready: the game."""
+    lines = LAUNCHER.read_text().splitlines()
+    start = next(i for i, line in enumerate(lines) if line.strip() == _GAME_START)
+    return "\n".join(lines[start + 1:])
+
+
+def test_only_the_game_joins_the_redirected_cgroup(tmp_path):
+    # Whatever joins the cgroup has its :443 redirected into mitmproxy. When the
+    # launcher joined it itself, the relay DELETE in cleanup() went into the proxy
+    # too, failed its certificate check, and every session outlived its game.
+    cgroup = tmp_path / "cgroup"
+    cgroup.mkdir()
+    (cgroup / "cgroup.procs").write_text("")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_bwrap = fake_bin / "bwrap"
+    fake_bwrap.write_text('#!/bin/sh\necho "game=$$"\n')
+    fake_bwrap.chmod(0o755)
+    script = (
+        f'set -euo pipefail\nCGROUP="{cgroup}"\nBUNDLE=/dev/null\nCA_TARGET=/dev/null\n'
+        "set -- true\n"
+        + game_launch_block()
+        + '\necho "launcher=$$"\n'
+    )
+    done = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True,
+        env={"PATH": f"{fake_bin}:/usr/bin:/bin"},
+    )
+    assert done.returncode == 0, done.stderr
+    pids = dict(line.split("=", 1) for line in done.stdout.split())
+    joined = (cgroup / "cgroup.procs").read_text().split()
+    assert joined == [pids["game"]]
+    assert pids["launcher"] not in joined
+
+
 @pytest.mark.parametrize("variable", ["JBVIP_RELAY_URL"])
 def test_the_readme_does_not_tell_the_user_to_export_the_relay_variables(variable):
     # The documented procedure was the bug: an export in a terminal cannot reach

@@ -176,14 +176,17 @@ tmpbundle="$(mktemp "$STATE/cabundle.XXXXXX")"
 cat "$SYS_CA" "$CA" > "$tmpbundle"
 mv -f "$tmpbundle" "$BUNDLE"
 
-# Join the net_cls cgroup whose :443/:38203 the kernel redirects to mitmproxy.
-# The game (this launcher's bwrap child) inherits the cgroup. NOTHING is injected
-# into the game process, so the AIR runtime is untouched. mitmdump (started above)
-# is NOT in this cgroup, so its own upstream connections aren't re-redirected.
-echo $$ > "$CGROUP/cgroup.procs"
-
+# Only the game joins the net_cls cgroup whose :443/:38203 the kernel redirects to
+# mitmproxy: a subshell joins, then execs bwrap. The launcher stays out, so its own
+# HTTPS (the relay DELETE in cleanup) isn't redirected into the proxy. mitmdump
+# (started above) is outside too, so its upstream connections aren't re-redirected.
+# NOTHING is injected into the game process, so the AIR runtime is untouched.
+#
 # Launch the game in a private mount namespace, binding our bundle over the CA
 # path it reads (scoped to the game only). bwrap shares the host network ns.
-bwrap --dev-bind / / \
-  --bind "$BUNDLE" "$CA_TARGET" \
-  -- "$@"
+(
+  echo "$BASHPID" > "$CGROUP/cgroup.procs"
+  exec bwrap --dev-bind / / \
+    --bind "$BUNDLE" "$CA_TARGET" \
+    -- "$@"
+)
