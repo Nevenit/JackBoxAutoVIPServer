@@ -1,10 +1,12 @@
 # jbvip relay
 
-Receives a host's Jackbox room code and pushes it to a paired phone, so it can
-get the code from anywhere — not just from the same wifi. The unit of tenancy
-is a *session*: one game night, created when the launcher starts and deleted
-when it exits, with its own publisher and subscriber tokens that die with it.
-Two sessions can never see each other's codes.
+Receives a host's Jackbox room code and pushes it to the phones following that
+game night, so they get the code from anywhere — not just from the same wifi. It
+also serves the page those phones open (`/j`), which frames jackbox.tv and swaps
+in each new room as its code arrives. The unit of tenancy is a *session*: one
+game night, created by the host's first launch of the night and kept across
+every pack launched after it, with its own publisher and subscriber tokens that
+die with it. Two sessions can never see each other's codes.
 
 Deploy behind a reverse proxy that terminates TLS. The service speaks plain HTTP
 and cannot verify its own transport, so the **clients** are what enforce
@@ -122,8 +124,10 @@ systemctl status jbvip-relay
 with no exception carved out anywhere. That is not a hardening compromise here —
 `create_app()` takes no configuration and the relay keeps every session, its
 tokens, and its rate limiters in memory only, so there is nothing on disk for it
-to write, ever. If the service fails to start on an unusual kernel or container
-runtime, drop the hardening block first and add it back a line at a time.
+to write, ever. (It does read the player page and the QR library under
+`relay/static/`, which strict mode allows.) If the service fails to start on an
+unusual kernel or container runtime, drop the hardening block first and add it
+back a line at a time.
 
 ### Run exactly one worker
 
@@ -196,53 +200,89 @@ sudo systemctl restart jbvip-relay
 Restarting drops **every** live session, not just the current code — the whole
 in-memory table, and every publisher and subscriber token issued so far. There
 is nothing to reconcile afterwards: any game in progress loses its relay
-connection, the launcher's next run creates a fresh session, and its phone
-scans a fresh QR code. There is no persisted state to clean up or migrate.
+connection, and phones already on the page are told the night has ended. The
+launcher's next run asks the relay about its saved session, gets a 404, makes a
+fresh one and shows its QR code. There is no persisted state on the relay to
+clean up or migrate.
 
 ## Capacity
 
 Everything the relay knows lives in one process's memory: up to 500 concurrent
 sessions, each capped at 16 subscribers (a Jackbox room holds about ten
-players), each idled out four hours after its last publish or subscribe. All
-three numbers are `relay/state.py` constants, not runtime configuration.
+players). A session ends at the first of these:
+
+- **2 hours without a room.** Counted from when its room was cleared, or from
+  when it was created if it never had one. Activity does not move this clock: a
+  phone listening to an empty session touches it every keepalive, and that must
+  not keep a finished night alive.
+- **4 hours idle.** Counted from its last publish or clear, or from the last
+  time a phone connected or its stream sent a keepalive.
+- **12 hours old.** A ceiling on a session's whole life, however busy.
+
+All of those numbers are `relay/state.py` constants, not runtime configuration.
+
+When a session ends its subscribers' streams are closed (within one 20-second
+keepalive), and the next request for it gets a 404, which the page reports as
+the night having ended.
+
+A full session admits a newcomer rather than refusing it: at 16 streams the
+relay drops the session's oldest one. A phone that slept or changed network
+leaves a stream that stays counted until a keepalive write to it fails, so a
+full session is likelier to hold dead streams than 16 live phones. A dropped
+page reconnects by itself, with a backoff.
 
 Because none of it is on disk, a restart — a deploy, a crash, a reboot — drops
 every session at once, exactly as described above. There is no recovery beyond
-the launcher creating a new one and the phone re-scanning its QR code.
+the launcher making a new session on its next run and the phones scanning its
+QR code.
 
 ## Endpoints
 
 | Method | Path                         | Auth              | Purpose                                                                     |
 |--------|------------------------------|-------------------|------------------------------------------------------------------------------|
 | POST   | `/sessions`                  | none              | Create a session → 201 `{session_id, publisher_token, subscriber_token, expires_at}` |
-| GET    | `/sessions/{id}`             | publisher token   | `{subscribers, expires_at}`, for the launcher's pairing window to poll       |
+| GET    | `/sessions/{id}`             | publisher token   | `{subscribers, expires_at}`: the launcher checks tonight's session is alive, and polls it while the QR window waits for a phone |
 | POST   | `/sessions/{id}/publish`     | publisher token   | Push `{code, ts?}` → 204                                                     |
-| GET    | `/sessions/{id}/subscribe`   | subscriber token  | SSE stream of `{code, ts}`                                                   |
+| DELETE | `/sessions/{id}/code`        | publisher token   | Clear the room: the host quit a pack; phones go back to waiting → 204        |
+| GET    | `/sessions/{id}/subscribe`   | subscriber token  | SSE stream of `{code, ts}`; `code` is `null` when there is no room           |
 | DELETE | `/sessions/{id}`             | publisher token   | End the session immediately → 204                                            |
-| GET    | `/j`                         | none              | The QR code's landing page (HTML)                                            |
+| GET    | `/`                          | none              | A one-line landing page                                                      |
+| GET    | `/j`                         | none              | The player page (`relay/static/player.html`)                                 |
+| GET    | `/static/*`                  | none              | Files under `relay/static/`, including the vendored QR library              |
 
 `POST /sessions` is deliberately unauthenticated — see "This is a public
 service" above. `GET /j` is too: the subscriber token travels in the URL
 **fragment** (`/j#<session_id>.<subscriber_token>`), which a browser never
 sends to any server, so the page that receives the request never sees it
-either.
+either. The page then sends the token in an `Authorization: Bearer` header when
+it subscribes, and loads no third-party script (the QR library is served from
+`/static/`).
 
 A session ID alone is not a capability: `GET`/`POST`/`DELETE` on
 `/sessions/{id}` with no token, or the wrong one, gets a 401. A session ID that
 does not exist — expired, deleted, or never created — gets a 404, so a caller
 can always tell "wrong token" apart from "this session is gone".
 
-## Freshness
+## Current code
 
-A subscriber that connects fresh is never handed a code the relay received more
-than 120 seconds ago — Jackbox recycles four-letter codes, and a stale one may
-belong to a stranger's room by the next day. That window is measured on the
-relay's own clock, so skew on the host PC (a dual-boot machine writing localtime
-to the RTC is hours out) cannot make every code look stale, or every code look
-fresh.
+A subscriber is told the session's current room the moment it connects, however
+long ago the host published it: `{"code": "ABCD", "ts": …}`. When the session has
+no room (before the first game, or after a pack quit) it is told
+`{"code": null, "ts": …}` instead. That matters because a phone closes its
+stream while its page is hidden, so a clear can happen while it isn't listening;
+on reconnecting it learns the room is gone. A code stays current until the host
+publishes another or clears it, and publishing the same code after a clear
+reaches the phones again.
 
-The `ts` in each payload is a different thing: the host's stamp from the moment
-it extracted the code, so a client can run its own end-to-end freshness check.
-Clients are expected to enforce the same 120-second window against it before
-acting on a code. Codes arriving on an already-open stream are forwarded as
-published, ungated.
+Serving a code at any age is safe because a code is only current while its pack
+is running: the launcher clears it when the pack exits, with
+`DELETE /sessions/{id}/code`. The relay used to refuse a code older than 120
+seconds, a rule from the single-tenant relay, where a code could outlive the
+night and belong to a stranger's room by the next day. Now the code lives inside
+a session that ends with the night. What is left is a closed room's code between
+two games of the same pack, or after a launcher crash that skipped the clear.
+jackbox.tv then says the room doesn't exist, which is acceptable.
+
+The `ts` in each payload is the host's stamp from the moment it extracted the
+code (for a `null` code, the relay's own clock), passed through unchanged.
+Nothing gates on it: not the relay, and not the player page.

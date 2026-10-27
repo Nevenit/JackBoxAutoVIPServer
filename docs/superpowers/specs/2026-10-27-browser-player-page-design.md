@@ -149,6 +149,9 @@ files served by Starlette are fine, and the systemd unit's read-only filesystem
   waiting screen, and fresh subscribers get no code. It's a new route or a variant of publish,
   the builder's choice. It must survive the existing de-duplication: publishing the same code
   after a clear must reach phones again.
+  *Built:* `DELETE /sessions/{id}/code`. A connecting phone is now sent `{"code": null}` when
+  there's no room, so a clear it missed while its stream was closed (page hidden) still lands.
+  "Fresh subscribers get no code" still holds: that event carries none.
 - **Late joiners and reloads get the current code, whatever its age.** Drop the
   `FRESH_SECONDS` gate in `current_code()` and the "clients should enforce 120 s against `ts`"
   guidance. Why this is safe: the rule dates from the single-tenant relay, where a code could

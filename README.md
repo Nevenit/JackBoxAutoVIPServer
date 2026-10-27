@@ -64,7 +64,10 @@ updates — there is nothing per-game or per-version to maintain.
    ```
 
    This finds every installed Jackbox game and sets its Steam launch option to
-   `<repo>/jbvip-run.sh %command%`.
+   `<repo>/jbvip-run.sh %command%`. It leaves The Jackbox Megapicker alone on
+   purpose: the Megapicker starts each pack through Steam, so every pack it
+   launches is wrapped already, and wrapping the Megapicker itself would hold the
+   proxy port for as long as it stays open.
 
 3. **Once per session** (e.g. after a reboot), activate the game-scoped traffic
    redirect. It needs `sudo` and stays active until you remove it or reboot:
@@ -76,6 +79,16 @@ updates — there is nothing per-game or per-version to maintain.
    This redirects only the Jackbox game's `:443` and `:38203` to the proxy —
    nothing else on the machine is touched. Remove it any time with
    `sudo ./jbvip-redirect-down.sh`.
+
+   The proxy listens on port 8081. If something else is using that port, pick
+   another (say 8082): run `sudo ./jbvip-redirect-up.sh 8082` and add
+   `JBVIP_PROXY_PORT=8082` to `~/.config/jbvip/relay.env`, the file the relay
+   section below describes (the launcher reads it on every launch, relay or no
+   relay). Remove the old redirect first, with
+   `sudo ./jbvip-redirect-down.sh 8081` or a reboot, because
+   `jbvip-redirect-up.sh` only adds rules: the old port's would keep catching the
+   game's traffic. Pass the port to `jbvip-redirect-down.sh` whenever it isn't
+   8081.
 
 4. Start Steam and launch any Jackbox game normally. The room code is now served
    on TCP `:38469`. Test it with:
@@ -110,13 +123,24 @@ used) is required because the oldest packs open their room-code websocket as a
 raw TLS socket that ignores proxy settings — only a kernel-level redirect catches
 it, and unlike injecting a library into the game it doesn't crash the AIR runtime.
 
+If a launch can't capture codes — the redirect from step 3 isn't up, there is no
+system CA bundle, the proxy port is already in use, or mitmdump won't start — the
+game still starts, just without room-code capture, and a desktop notification (if
+`notify-send` is installed) says what is wrong and how to fix it. The first
+three are caught before the QR window (below) would appear, so there is nothing
+to scan; a mitmdump that won't start is only noticed after it. A busy port is
+usually the last launch's proxy still closing after you quit a pack: wait a few
+seconds and launch again.
+
 ## Reaching a Phone That Isn't on Your Wifi (optional)
 
 By default the room code is served only on your LAN, over TCP 38469. If you want
 a client to receive it from anywhere — a phone on cellular, or a friend's
 house — you can run the small relay in `relay/` on a VPS. The host pushes the
 code out over ordinary outbound HTTPS, so there is nothing to port-forward and
-nothing new listening on your machine.
+nothing new listening on your machine. The relay also serves a web page that puts
+each new room on the players' phones, so nobody installs anything or types a
+code.
 
 See `relay/README.md` for deployment. Once it is running, create
 `~/.config/jbvip/relay.env` — the launcher reads it on every game launch:
@@ -133,22 +157,39 @@ A file rather than `export` because Steam launches the game with the environment
 the Steam client itself started with, so variables exported in a terminal never
 reach it.
 
-**There is no token to configure any more.** Every credential is minted fresh
-at launch: `jbvip-run.sh` creates a *session* on the relay the moment it starts
-(before the game itself launches), and that session — and everything it can
-do — is deleted again when the game exits. Nothing about the relay is
-long-lived on this machine.
+**There is no token to configure any more.** The relay mints every credential.
+The first launch of the night creates a *session* on it, and the launcher keeps
+that one session for the whole night, across every pack you launch, in
+`${XDG_STATE_HOME:-~/.local/state}/jbvip/night.json` (readable only by you).
+Later launches reuse it for as long as the relay still has it, and make a new
+one if it doesn't (the relay restarted, say). Its credentials work for that one
+night and nothing else. When you quit a pack, the launcher clears the room, not
+the session, so phones stay on it and go back to waiting. The relay ends a
+session on its own once it has had no room for 2 hours; `relay/README.md` has
+the other limits.
 
-Concretely, once `JBVIP_RELAY_URL` is configured, every launch shows a small
-QR-code window before the game starts, meant to be scanned to pair a phone
-with that game night. **The phone app that does the pairing does not exist
-yet.** Scanning the QR with an ordinary camera app just opens a web page
-telling you to open it in the jbvip app, which does not subscribe — so today
-the window can never close itself. Either press **Skip** to close it at once
-and launch the game LAN-only, or leave it, and after 120 seconds it gives up
-and launches the game the same way. A dead or unreachable relay is handled
-identically: the game **always** launches — LAN-only if the relay could not
-be reached, reachable from any phone that paired if it could.
+Once `JBVIP_RELAY_URL` is configured, the first launch of the night shows a small
+QR-code window before the game starts. Scan it with a phone's camera: it opens a
+page on the relay (`/j`) that asks for a name — once per phone — and then shows
+jackbox.tv in a frame with the room code and that name already filled in. You
+still tap Play yourself. From then on the phone follows the host from game to
+game, across packs and Megapicker launches, with nothing to scan again. When a
+pack is quit, the page goes back to "Waiting for the host to pick a game…" until
+the next one starts.
+
+Any player can bring in more people: the page's **Invite** button shows a QR code
+of the page's own link, and **Share link…** sends it on. Whoever opens that link
+joins the same night, so share it only with people you would give the room code
+to.
+
+The QR window appears only when no phone is connected: on the first launch of the
+night, or after everyone has left or locked their phone (a page stays connected
+only while it is on screen). Switching packs with phones still on the page shows
+nothing and starts the game straight away. The window closes by itself as soon as
+a phone joins. Press **Skip** to close it at once; if you leave it, it gives up
+after 120 seconds and starts the game anyway. A dead or unreachable relay is
+handled the same way: the game **always** launches, LAN-only if the relay can't
+be reached and with phones following it if it can.
 
 If the relay does not seem to be working, launch a game once and then look at
 `~/.local/state/jbvip/last-run.log`. The launcher keeps the proxy log there —

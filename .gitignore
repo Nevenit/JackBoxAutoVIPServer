@@ -4,7 +4,6 @@ __pycache__/
 *.pyc
 
 # Node
-injection/node_modules/
 tests/browser/node_modules/
 
 # Brainstorming mockups

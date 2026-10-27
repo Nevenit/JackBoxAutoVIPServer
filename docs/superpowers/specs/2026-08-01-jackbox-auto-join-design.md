@@ -1,5 +1,7 @@
 # Jackbox Auto-Join VIP Client — Design Spec
 
+> **Superseded by `2026-10-27-browser-player-page-design.md`:** the phone runs a web page served by the relay, not an Android app.
+
 **Date:** 2026-08-01
 **Status:** Approved
 **Depends on:** `2026-06-03-jackbox-roomcode-extractor-design.md` (the extractor,
