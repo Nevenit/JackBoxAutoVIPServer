@@ -752,6 +752,8 @@ async def test_the_bare_domain_says_to_scan_the_qr():
     async with serving(app) as http:
         response = await http.get("/")
     assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert response.headers["cache-control"] == "no-store"
     assert "Scan the QR code on the host's screen to join." in response.text
 
 

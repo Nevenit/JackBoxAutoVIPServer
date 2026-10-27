@@ -309,9 +309,12 @@ def test_with_no_saved_night_one_is_created_and_saved(tmp_path):
 def test_an_unreachable_relay_is_an_error_not_a_new_night(tmp_path):
     path = tmp_path / "night.json"
     save_night(path, CREDENTIALS)
-    call = RecordingCall(exception=urllib.error.URLError("down"))
+    # A create would succeed, so swallowing the error and minting a new night
+    # can't hide behind a second failure.
+    call = RecordingCall(urllib.error.URLError("down"), CREATED)
     with pytest.raises(urllib.error.URLError):
         resume_or_create("https://relay.example", path, call=call)
+    assert [m for _, m, _ in call.calls] == ["GET"]
     assert load_night(path) == CREDENTIALS
 
 
