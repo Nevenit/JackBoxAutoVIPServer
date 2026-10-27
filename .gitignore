@@ -8,3 +8,6 @@ injection/node_modules/
 
 # Brainstorming mockups
 .superpowers/
+
+# Git worktrees for isolated builds
+.worktrees/
