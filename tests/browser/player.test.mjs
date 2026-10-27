@@ -12,7 +12,7 @@ import puppeteer from 'puppeteer-core';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const CHROMIUM = process.env.CHROMIUM_PATH || '/usr/bin/chromium';
 const NAME = 'A%26B%20%231%20AND%20M'; // "a&b #1 and more", uppercased, cut to 12, encoded
-const room = (code) => `https://jackbox.tv/?code=${code}&name=${NAME}`;
+const room = (code, name = NAME) => `https://jackbox.tv/?code=${code}&name=${name}`;
 
 let failures = 0;
 function check(name, condition) {
@@ -115,9 +115,9 @@ try {
     request.continue();
   });
   // A missing element reads as hidden or empty, so it fails a check instead of ending the run.
-  const visible = (id) => page.$eval(`#${id}`, (el) => el.checkVisibility()).catch(() => false);
-  const text = (id) => page.$eval(`#${id}`, (el) => el.textContent).catch(() => '');
-  const frameSrc = () => page.$eval('#frame', (el) => el.src).catch(() => '');
+  const visible = (id, p = page) => p.$eval(`#${id}`, (el) => el.checkVisibility()).catch(() => false);
+  const text = (id, p = page) => p.$eval(`#${id}`, (el) => el.textContent).catch(() => '');
+  const frameSrc = (p = page) => p.$eval('#frame', (el) => el.src).catch(() => '');
   const setVisibility = (state) => page.evaluate((state) => {
     Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state });
     document.dispatchEvent(new Event('visibilitychange'));
@@ -221,7 +221,50 @@ try {
   check("a wrong token: says the link doesn't work", await until(async () =>
     (await visible('wait-panel')) && (await text('wait-text')).includes("link doesn't work")));
 
-  const tokens = [s1, s2].map((night) => night.subscriber_token);
+  // 13. A late joiner: a new phone, with no name stored, opens the link itself (not a
+  // hashchange) after the room was published. Its own browser context, so its own storage.
+  const s3 = await newNight();
+  await publish(s3, 'LATE');
+  const joiner = await (await browser.createBrowserContext()).newPage();
+  joiner.on('pageerror', (error) => check(`no uncaught error in the joiner's page: ${error.message}`, false));
+  const joinerRooms = []; // the joiner's jackbox.tv loads
+  await joiner.setRequestInterception(true);
+  joiner.on('request', (request) => {
+    const url = request.url();
+    requested.push(url);
+    if (!url.startsWith('https://jackbox.tv/')) return request.continue();
+    joinerRooms.push(url);
+    return request.respond({ status: 200, contentType: 'text/html', body: '<p>jackbox.tv stub</p>' });
+  });
+  await joiner.goto(`${base}/j${fragment(s3)}`);
+  check('a late joiner is asked for a name first', await until(() => visible('name-panel', joiner)));
+  await joiner.type('#name-input', 'late joiner');
+  await joiner.click('#name-save');
+  check('after Join, the room published before the page opened is framed', await until(async () =>
+    (await frameSrc(joiner)) === room('LATE', 'LATE%20JOINER')));
+  await sleep(500); // time for a second load to show up, if there were one
+  check('the late joiner loaded jackbox.tv exactly once', joinerRooms.length === 1);
+
+  // 14. A rename mid-game, to a name toUpperCase lengthens (ß becomes SS) so the cut at 12
+  // lands inside the emoji. Half an emoji would make encodeURIComponent throw.
+  // Clicked through the DOM: a mouse click just after a panel opens over the jackbox.tv frame
+  // can reach that cross-origin frame, before the browser's hit-testing has seen the panel.
+  const tap = (id) => joiner.$eval(`#${id}`, (el) => el.click());
+  await tap('menu-btn');
+  await tap('rename-btn');
+  await joiner.$eval('#name-input', (el) => { el.value = ''; });
+  await joiner.type('#name-input', 'Großer Han😀');
+  await tap('name-save');
+  check('a name cut inside an emoji keeps none of it',
+    (await joiner.evaluate(() => localStorage.getItem('jbvip-name'))) === 'GROSSER HAN');
+  await sleep(500); // time for a reload to show up, if there were one
+  check('a rename does not reload the running game',
+    joinerRooms.length === 1 && (await frameSrc(joiner)) === room('LATE', 'LATE%20JOINER'));
+  await publish(s3, 'NEXT');
+  check('the new name applies from the next room', await until(async () =>
+    (await frameSrc(joiner)) === room('NEXT', 'GROSSER%20HAN') && joinerRooms.length === 2));
+
+  const tokens = [s1, s2, s3].map((night) => night.subscriber_token);
   check('no request URL carries a token (the fragment is never sent)',
     requested.every((url) => !tokens.some((token) => url.split('#')[0].includes(token))));
 } finally {

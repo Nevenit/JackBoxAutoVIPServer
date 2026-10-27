@@ -10,7 +10,8 @@
   html, body { margin: 0; height: 100%; background: #16161a; color: #eee;
                font: 15px/1.4 system-ui, -apple-system, sans-serif; }
   #app { position: fixed; inset: 0; display: flex; flex-direction: column;
-         padding-top: env(safe-area-inset-top); }
+         padding: env(safe-area-inset-top) env(safe-area-inset-right)
+                  env(safe-area-inset-bottom) env(safe-area-inset-left); }
   #bar { flex: none; display: flex; align-items: center; gap: 8px; padding: 6px 10px;
          background: #24242b; }
   #code { font-weight: 700; letter-spacing: .08em; }
@@ -240,7 +241,9 @@ function start() {
 
 $("name-panel").onsubmit = (event) => {
   event.preventDefault();
-  const value = $("name-input").value.trim().toUpperCase().slice(0, 12);
+  // toUpperCase can lengthen a name (ß becomes SS), so the cut can split an emoji; its
+  // leftover half would make encodeURIComponent throw.
+  const value = $("name-input").value.trim().toUpperCase().slice(0, 12).replace(/[\uD800-\uDBFF]$/, "");
   if (!value) return;
   name = value;
   storeName(value);
