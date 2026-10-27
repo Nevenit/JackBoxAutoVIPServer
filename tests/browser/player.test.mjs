@@ -183,6 +183,15 @@ try {
   check('Reload game loads the same room once more', await until(() =>
     jackbox.length === loads + 1 && jackbox.at(-1) === room('QRST')));
 
+  // 8b. The host quits while this phone is in another app, so its stream is closed and it
+  // misses the clear. Coming back, it must still end up waiting, not in the closed room.
+  await setVisibility('hidden');
+  const asleep = await until(async () => (await streams(s1)) === 0);
+  await clearRoom(s1);
+  await setVisibility('visible');
+  check('a clear missed while hidden: back to waiting on return', asleep && await until(async () =>
+    (await visible('wait-panel')) && !(await visible('frame')) && (await frameSrc()) === ''));
+
   // 9. A re-scan that only changes the fragment.
   const s2 = await newNight();
   await page.evaluate((hash) => { location.hash = hash; }, fragment(s2));

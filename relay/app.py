@@ -266,6 +266,10 @@ class Relay:
         current = self.state.current_code(session_id)
         if current is not None:
             queue.put_nowait({"code": current.code, "ts": current.ts})
+        else:
+            # "No room" is news too: a phone that slept or reconnected through
+            # a clear still has the closed room in its frame.
+            queue.put_nowait({"code": None, "ts": time.time()})
 
         async def stream():
             try:

@@ -68,9 +68,17 @@ async def test_a_subscriber_never_receives_another_sessions_code():
                 headers=auth(a["publisher_token"]),
             )
             assert published.status_code == 204
-            assert await first_event(to_a) == {"code": "WEWW", "ts": 1000.0}
-            with pytest.raises(asyncio.TimeoutError):
-                await first_event(to_b, timeout=0.5)
+            seed, code = await next_events(to_a, 2)
+            assert seed["code"] is None  # a night with no room says so on connect
+            assert code == {"code": "WEWW", "ts": 1000.0}
+            # b's next code is its own, so nothing of a's came in between.
+            # (Asserting on that, rather than on silence, keeps this from sleeping.)
+            await http.post(
+                publish_url(b),
+                json={"code": "BBBB", "ts": 1000.0},
+                headers=auth(b["publisher_token"]),
+            )
+            assert [e["code"] for e in await next_events(to_b, 2)] == [None, "BBBB"]
 
 
 # --- session creation ---------------------------------------------------
@@ -315,7 +323,9 @@ async def test_clearing_the_room_tells_listening_phones():
             assert set(second) == {"code", "ts"}  # the shape the page reads
 
 
-async def test_a_phone_that_joins_after_a_clear_gets_no_code():
+async def test_a_phone_that_joins_after_a_clear_is_told_there_is_no_room():
+    # A phone that was asleep or reconnecting when the host quit still has the
+    # closed room in its frame, and silence would leave it there.
     state, app = make()
     async with serving(app) as http:
         session = await new_session(http)
@@ -324,14 +334,16 @@ async def test_a_phone_that_joins_after_a_clear_gets_no_code():
         async with http.stream(
             "GET", subscribe_url(session), headers=auth(session["subscriber_token"])
         ) as response:
-            with pytest.raises(asyncio.TimeoutError):
-                await first_event(response, timeout=0.5)
+            first = await first_event(response)
+    assert first["code"] is None
+    assert set(first) == {"code", "ts"}  # the shape the page reads
 
 
 async def test_clearing_when_there_is_no_room_tells_nobody():
-    # Nothing was removed, so there is nothing to announce: the first thing a
-    # phone hears is the code that follows. (Asserting on that, rather than on
-    # silence, keeps the test from having to sleep.)
+    # Nothing was removed, so there is nothing to announce: after the "no room"
+    # every phone hears on connect, the next thing is the code that follows.
+    # (Asserting on that, rather than on silence, keeps the test from having to
+    # sleep.)
     _, app = make()
     async with serving(app) as http:
         session = await new_session(http)
@@ -347,7 +359,9 @@ async def test_clearing_when_there_is_no_room_tells_nobody():
                 json={"code": "WEWW", "ts": 1000.0},
                 headers=auth(session["publisher_token"]),
             )
-            assert await first_event(response) == {"code": "WEWW", "ts": 1000.0}
+            seed, code = await next_events(response, 2)
+            assert seed["code"] is None
+            assert code == {"code": "WEWW", "ts": 1000.0}
 
 
 async def test_clearing_needs_the_publisher_token():
@@ -421,7 +435,9 @@ async def test_a_subscriber_receives_a_code_published_after_connecting():
                 json={"code": "ZZZZ", "ts": 1000.0},
                 headers=auth(session["publisher_token"]),
             )
-            assert await first_event(response) == {"code": "ZZZZ", "ts": 1000.0}
+            seed, code = await next_events(response, 2)
+            assert seed["code"] is None  # nothing published yet: no room
+            assert code == {"code": "ZZZZ", "ts": 1000.0}
 
 
 async def test_a_late_subscriber_gets_the_current_code_however_old():
