@@ -13,7 +13,7 @@ from pathlib import Path
 
 import vdf
 
-from extractor.steam import _apps, jackbox_app_ids, set_launch_option
+from extractor.steam import _apps, _is_ours, jackbox_app_ids, set_launch_option
 
 REPO = Path(__file__).resolve().parent
 WRAP = f"{REPO / 'jbvip-run.sh'} %command%"
@@ -109,7 +109,7 @@ def main():
         cfg = vdf.loads(cfg_path.read_text())
         for app_id in games:
             prev = _apps(cfg).get(app_id, {}).get("LaunchOptions")
-            if prev and prev != WRAP:
+            if prev and not _is_ours(prev):
                 print(f"WARNING: {games[app_id]} ({app_id}) had custom LaunchOptions "
                       f"{prev!r}; saved for restore on uninstall.")
             cfg = set_launch_option(cfg, app_id, WRAP)
