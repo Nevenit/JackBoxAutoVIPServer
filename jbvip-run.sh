@@ -120,6 +120,9 @@ for f in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /et
   [ -f "$f" ] && SYS_CA="$f" && break
 done
 [ -n "$SYS_CA" ] || { echo "jbvip: no system CA bundle found" >&2; exit 1; }
+# bubblewrap 0.13 refuses to mount onto a symlink, and Arch's CA path is one, so
+# mount over the file it points to. The game still opens it through the link.
+CA_TARGET="$(readlink -f "$SYS_CA")"
 
 port_up() { ss -ltn 2>/dev/null | grep -qE "[:.]$PORT[[:space:]]"; }
 if port_up; then
@@ -182,5 +185,5 @@ echo $$ > "$CGROUP/cgroup.procs"
 # Launch the game in a private mount namespace, binding our bundle over the CA
 # path it reads (scoped to the game only). bwrap shares the host network ns.
 bwrap --dev-bind / / \
-  --bind "$BUNDLE" "$SYS_CA" \
+  --bind "$BUNDLE" "$CA_TARGET" \
   -- "$@"

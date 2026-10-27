@@ -289,6 +289,71 @@ def test_the_launcher_deletes_its_session_on_the_way_out():
     assert "|| true" in cleanup
 
 
+def ca_target_line() -> str:
+    """The launcher's line that picks the file the trust bundle is mounted over."""
+    line = next(
+        (one for one in LAUNCHER.read_text().splitlines() if one.startswith("CA_TARGET=")),
+        None,
+    )
+    assert line, "jbvip-run.sh no longer picks a CA_TARGET for the trust bundle"
+    return line
+
+
+def bwrap_line() -> str:
+    """The launcher's real bwrap invocation, line continuations joined."""
+    text = LAUNCHER.read_text().replace("\\\n", " ")
+    line = next(
+        one.strip() for one in text.splitlines()
+        if one.strip().startswith(("bwrap ", "exec bwrap "))
+    )
+    return line.removeprefix("exec ")
+
+
+def symlinked_ca(tmp_path):
+    """A CA path laid out like Arch's: a symlink to the real bundle file."""
+    real = tmp_path / "tls-ca-bundle.pem"
+    real.write_text("system CAs\n")
+    link = tmp_path / "ca-certificates.crt"
+    link.symlink_to(real.name)
+    return link, real
+
+
+def test_the_ca_target_is_the_file_a_symlinked_ca_path_points_to(tmp_path):
+    # Arch ships /etc/ssl/certs/ca-certificates.crt as a symlink, and bubblewrap
+    # 0.13 refuses to mount onto one, so the bind has to land on its target.
+    link, real = symlinked_ca(tmp_path)
+    script = (
+        f'set -euo pipefail\nSYS_CA="{link}"\n{ca_target_line()}\n'
+        'printf "%s\\n" "$CA_TARGET"\n'
+    )
+    done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == str(real)
+
+
+def test_the_game_reads_the_trust_bundle_through_a_symlinked_ca_path(tmp_path):
+    """Run the launcher's real bwrap line and read the CA path as the game does.
+
+    Before the fix every launch died here with "bwrap: Can't mount on symlink
+    destination" and the game never started.
+    """
+    if shutil.which("bwrap") is None:  # pragma: no cover - bwrap is a hard requirement
+        pytest.skip("bubblewrap is not installed")
+    link, real = symlinked_ca(tmp_path)
+    bundle = tmp_path / "cabundle.pem"
+    bundle.write_text("system CAs\nmitmproxy CA\n")
+    script = (
+        f'set -euo pipefail\nSYS_CA="{link}"\nBUNDLE="{bundle}"\n'
+        f"{ca_target_line()}\n"
+        'set -- cat "$SYS_CA"\n'  # stands in for the game
+        f"{bwrap_line()}\n"
+    )
+    done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout == "system CAs\nmitmproxy CA\n"
+    assert real.read_text() == "system CAs\n"  # only the game's view changed
+
+
 @pytest.mark.parametrize("variable", ["JBVIP_RELAY_URL"])
 def test_the_readme_does_not_tell_the_user_to_export_the_relay_variables(variable):
     # The documented procedure was the bug: an export in a terminal cannot reach
