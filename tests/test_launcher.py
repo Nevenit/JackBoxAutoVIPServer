@@ -443,14 +443,14 @@ def launcher_if_block(first_line: str) -> str:
     return "\n".join(lines[start: lines.index(indent + "fi", start) + 1])
 
 
-def run_fallback(tmp_path, code: str, *, notify_send: bool = True):
+def run_fallback(tmp_path, code: str, *, notify_send: bool = True, env=None):
     """Run launcher `code` that should end in run_plain, as the launcher would.
 
     Returns (process, game_marker, notify_log). The game is a shell function
     that leaves the marker, so the marker says whether the game started. PATH is
     never the real one: this machine's own notify-send would raise a real
     desktop notification. The stub logs its arguments, one per line; with
-    notify_send=False there is none at all.
+    notify_send=False there is none at all. `env` adds to the environment.
     """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -472,6 +472,7 @@ def run_fallback(tmp_path, code: str, *, notify_send: bool = True):
         env={
             "HOME": str(tmp_path),
             "PATH": f"{bin_dir}:/usr/bin:/bin" if notify_send else str(bin_dir),
+            **(env or {}),
         },
     )
     # run_plain ends the launcher. Returning would carry on into mitmdump and
@@ -607,6 +608,32 @@ def test_the_fallback_returns_the_games_exit_status_and_still_cleans_up(tmp_path
         + '\nrun_plain "for the test"',
     )
     assert done.returncode == 7, done.stderr
+    assert not state.exists()
+
+
+@pytest.mark.parametrize("inherited", [
+    {"SESSION_ID": "inherited-id"},
+    {"SESSION_TOKEN": "inherited-token"},
+    {"SESSION_ID": "inherited-id", "SESSION_TOKEN": "inherited-token"},
+], ids=["id", "token", "both"])
+def test_inherited_session_variables_neither_reach_the_game_nor_break_cleanup(
+    tmp_path, inherited
+):
+    # A run_plain before pairing fires the trap, which reads both. An exported
+    # SESSION_TOKEN would also carry tonight's publisher token into the game.
+    state = tmp_path / "run-state"
+    state.mkdir(mode=0o700)
+    done, _, _ = run_fallback(
+        tmp_path,
+        f'umask 077\nSTATE="{state}"\nJBVIP_RELAY_URL=""\n'
+        'GAME=(sh -c "env; exit 7")\n'  # a game that shows what it was given
+        + cleanup_block()
+        + '\nrun_plain "for the test"',
+        env=inherited,
+    )
+    assert done.returncode == 7, done.stderr
+    given = {line.split("=", 1)[0] for line in done.stdout.splitlines()}
+    assert given.isdisjoint({"SESSION_ID", "SESSION_TOKEN"})
     assert not state.exists()
 
 

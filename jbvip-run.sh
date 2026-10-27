@@ -106,13 +106,16 @@ LOG_MARKER="jbvip-relay:"
 # delimiter, because flow_detail=1 truncates long URLs mid-code.
 REDACT_CODES='s#(/rooms/)[A-Za-z0-9]+#\1<redacted>#g'
 MITM=""
+# Tonight's session, filled in by the pairing step below. Set before the trap,
+# which reads them, and never exported: the token reaches mitmdump alone (see
+# the mitmdump line below), never the game. `+x` also drops an inherited export.
+declare +x SESSION_ID="" SESSION_TOKEN=""
 
 cleanup() {
   # Clear the room, not the session: the session is tonight's and the next pack
   # reuses it (see NIGHT_FILE), but this pack has quit, so phones still
   # following it go back to "waiting" instead of showing a dead code.
-  # `${SESSION_ID:-}` because the trap can fire before that line ran.
-  if [ -n "${SESSION_ID:-}" ]; then
+  if [ -n "$SESSION_ID" ]; then
     JBVIP_RELAY_URL="$JBVIP_RELAY_URL" \
     JBVIP_SESSION_ID="$SESSION_ID" \
     JBVIP_SESSION_TOKEN="$SESSION_TOKEN" \
@@ -163,9 +166,6 @@ fi
 # --- pair a phone, if a relay is configured ---------------------------------
 # Deliberately before mitmdump and the game: fighting a fullscreen game for
 # stacking order under Wayland is unreliable, and there is a natural gap here.
-# Not exported — see the mitmdump line below.
-SESSION_ID=""
-SESSION_TOKEN=""
 SESSION_ENV="$STATE/session.env"
 # The session is tonight's, not this launch's: the QR window resumes the one
 # saved here (or makes one and saves it), and only shows its QR code when no
