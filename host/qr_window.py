@@ -146,6 +146,10 @@ def show_card(credentials, *, keeps_showing=None, hide=None, launcher=None) -> N
         launcher = os.getppid()
 
     root = tk.Tk()
+    # Hidden until it has its position: update_idletasks below maps an
+    # override-redirect window at (0, 0), and geometry() only moves it on the
+    # next turn of the main loop, so the card would flash in the top-left.
+    root.withdraw()
     root.overrideredirect(True)
     monitor = card_monitor(
         _active_monitors(), root.winfo_screenwidth(), root.winfo_screenheight()
@@ -186,6 +190,10 @@ def show_card(credentials, *, keeps_showing=None, hide=None, launcher=None) -> N
     # timeout (5 s). The card is static, so nothing visibly stops; use a thread
     # if it ever animates.
     def close(_event):
+        # Off the screen first: with the relay down, hide() holds this loop for
+        # up to its request timeout, and a card that sits there looks dead.
+        root.withdraw()
+        root.update_idletasks()
         hide(credentials)  # whatever it answers: this card is done
         root.destroy()
 
@@ -201,10 +209,16 @@ def show_card(credentials, *, keeps_showing=None, hide=None, launcher=None) -> N
     root.update_idletasks()
     x, y = card_position(monitor, root.winfo_reqwidth(), root.winfo_reqheight())
     root.geometry(f"+{x}+{y}")
+    root.deiconify()
 
     interval = round(CARD_POLL_SECONDS * 1000)
 
     def poll():
+        # An override-redirect window is stacked by the X server alone, so a
+        # game window of that kind mapped after the card would cover it for
+        # good. Raising it never moves the keyboard focus. First, so a slow
+        # keeps_showing() doesn't delay it.
+        root.lift()
         if launcher_gone(launcher) or not keeps_showing():
             root.destroy()
         else:
