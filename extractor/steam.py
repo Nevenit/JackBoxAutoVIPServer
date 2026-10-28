@@ -47,18 +47,19 @@ def _apps(cfg: dict) -> dict:
 def _is_ours(value: str) -> bool:
     """True if a LaunchOptions value is the jbvip wrapper we set.
 
-    Our wrapper always contains the script name and ends with %command%; we match
-    on that marker (not the absolute path) so a moved repo still uninstalls.
+    Our wrapper always contains the script name right before %command% (the
+    user's own arguments may follow); we match on that marker, not the absolute
+    path, so a moved repo still uninstalls.
     """
-    v = (value or "").strip()
-    return JBVIP_MARKER in v and v.endswith("%command%")
+    return f"{JBVIP_MARKER} %command%" in (value or "")
 
 
 def set_launch_option(cfg: dict, app_id: str, value: str) -> dict:
     """Set apps.<app_id>.LaunchOptions to value, preserving any custom prior value.
 
     If the app already had a non-jbvip LaunchOptions, it is stashed once under
-    SAVED_KEY so clear_launch_option() can restore it on uninstall.
+    SAVED_KEY so clear_launch_option() can restore it on uninstall, and kept in
+    use: the wrapper goes where its %command% is, or before its arguments.
     """
     apps = _apps(cfg)
     block = apps.setdefault(app_id, {})
@@ -67,6 +68,11 @@ def set_launch_option(cfg: dict, app_id: str, value: str) -> dict:
     # the sidecar's presence alone signals "there was a prior value to restore".
     if prev is not None and not _is_ours(prev) and SAVED_KEY not in block:
         block[SAVED_KEY] = prev
+    saved = block.get(SAVED_KEY)
+    if saved and "%command%" in value:
+        # Steam appends options without %command% after the game, so they go last.
+        value = (saved.replace("%command%", value, 1) if "%command%" in saved
+                 else f"{value} {saved}")
     block["LaunchOptions"] = value
     return cfg
 

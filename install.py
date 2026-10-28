@@ -111,7 +111,8 @@ def main():
             prev = _apps(cfg).get(app_id, {}).get("LaunchOptions")
             if prev and not _is_ours(prev):
                 print(f"WARNING: {games[app_id]} ({app_id}) had custom LaunchOptions "
-                      f"{prev!r}; saved for restore on uninstall.")
+                      f"{prev!r}; kept them around the launcher (uninstall restores "
+                      f"the original).")
             cfg = set_launch_option(cfg, app_id, WRAP)
         write_config_atomic(cfg_path, vdf.dumps(cfg, pretty=True))
         print(f"Updated {cfg_path} (backup: {cfg_path}.jbvip.bak)")

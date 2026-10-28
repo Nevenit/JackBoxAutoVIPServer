@@ -30,8 +30,42 @@ def test_set_launch_option_preserves_existing_under_sidecar():
     # 331670 has a pre-existing custom "existing %command%" value.
     cfg = set_launch_option(_load(), "331670", WRAP)
     block = _apps(cfg)["331670"]
-    assert block["LaunchOptions"] == WRAP
+    assert block["LaunchOptions"] == "existing /opt/jbvip/jbvip-run.sh %command%"
     assert block[SAVED_KEY] == "existing %command%"
+
+
+def test_a_custom_option_keeps_its_arguments_around_the_wrapper():
+    # A user's renderer flag is often what makes the game start at all.
+    cfg = _load()
+    _apps(cfg)["1148350"]["LaunchOptions"] = "%command% --renderer=OpenGL"
+    cfg = set_launch_option(cfg, "1148350", WRAP)
+    assert (_apps(cfg)["1148350"]["LaunchOptions"]
+            == "/opt/jbvip/jbvip-run.sh %command% --renderer=OpenGL")
+
+
+def test_a_custom_option_without_command_is_appended_like_steam_does():
+    cfg = _load()
+    _apps(cfg)["1148350"]["LaunchOptions"] = "-novid"
+    cfg = set_launch_option(cfg, "1148350", WRAP)
+    assert _apps(cfg)["1148350"]["LaunchOptions"] == f"{WRAP} -novid"
+
+
+def test_reinstalling_over_a_kept_custom_option_wraps_it_once():
+    cfg = _load()
+    _apps(cfg)["1148350"]["LaunchOptions"] = "%command% --renderer=OpenGL"
+    cfg = set_launch_option(cfg, "1148350", WRAP)
+    cfg = set_launch_option(cfg, "1148350", WRAP)
+    assert (_apps(cfg)["1148350"]["LaunchOptions"]
+            == "/opt/jbvip/jbvip-run.sh %command% --renderer=OpenGL")
+
+
+def test_uninstall_restores_a_custom_option_kept_around_the_wrapper():
+    cfg = _load()
+    _apps(cfg)["1148350"]["LaunchOptions"] = "%command% --renderer=OpenGL"
+    cfg = set_launch_option(cfg, "1148350", WRAP)
+    cfg = clear_launch_option(cfg, "1148350", WRAP)
+    assert _apps(cfg)["1148350"]["LaunchOptions"] == "%command% --renderer=OpenGL"
+    assert SAVED_KEY not in _apps(cfg)["1148350"]
 
 
 def test_set_launch_option_saves_prior_value_only_once():
