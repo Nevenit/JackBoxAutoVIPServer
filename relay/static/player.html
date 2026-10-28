@@ -62,6 +62,7 @@
       <button id="invite-close" type="button">Close</button>
     </div>
     <div id="menu-panel" class="panel" hidden>
+      <button id="qr-hide-btn" type="button">Hide QR on TV</button>
       <button id="rename-btn" type="button">Change name (from the next game)</button>
       <button id="reload-btn" type="button">Reload game</button>
       <a id="direct-link" target="_blank" rel="noopener">Open this room in jackbox.tv</a>
@@ -97,6 +98,7 @@ let session = null;     // {id, token} from the #fragment
 let name = loadName();
 let connection = "none"; // none | connecting | live | retrying | ended | refused
 let latest = null;      // the room the relay last announced; null while there's none
+let qrHidden = true;    // the TV's QR card is hidden; stays true until the relay says it's up
 let current = null;     // the room in the frame
 let overlay = null;     // id of the panel open on top: invite, menu or rename
 let stream = null;      // AbortController of the open subscription
@@ -137,6 +139,7 @@ function render() {
     connection === "live" ? (current ? "in game" : "waiting") : STATUS[connection];
   $("wait-text").textContent = PROBLEM[connection] || "Waiting for the host to pick a game…";
   $("invite-btn").hidden = !session;
+  $("qr-hide-btn").hidden = qrHidden || connection !== "live";
   $("reload-btn").hidden = $("direct-link").hidden = !current;
 }
 
@@ -158,6 +161,13 @@ function onCode(code) {
   render();
 }
 
+// Every event carries the room and the QR flag. The flag changing re-sends the same room, so
+// onCode leaves the frame alone. An event without the flag (an older relay) counts as hidden.
+function onEvent(event) {
+  qrHidden = event.qr_hidden !== false;
+  onCode(event.code);
+}
+
 // Server-sent events off a fetch body: blank-line-separated, and only `data:` lines matter.
 async function readEvents(body) {
   const reader = body.getReader();
@@ -170,7 +180,7 @@ async function readEvents(body) {
     let end;
     while ((end = buffer.indexOf("\n\n")) >= 0) {
       for (const line of buffer.slice(0, end).split("\n")) {
-        if (line.startsWith("data:")) onCode(JSON.parse(line.slice(5)).code);
+        if (line.startsWith("data:")) onEvent(JSON.parse(line.slice(5)));
       }
       buffer = buffer.slice(end + 2);
     }
@@ -232,6 +242,7 @@ function start() {
   session = parseHash();
   connection = session ? "connecting" : "none";
   latest = null;
+  qrHidden = true;
   overlay = null;
   retryDelay = 1000;
   show(null);
@@ -279,8 +290,26 @@ $("share-btn").onclick = async () => {
 };
 
 $("menu-btn").onclick = () => {
+  $("qr-hide-btn").textContent = "Hide QR on TV"; // a failed try's message doesn't outlive the menu
   overlay = overlay === "menu-panel" ? null : "menu-panel";
   render();
+};
+
+// On success the relay's event hides the button on every other phone; this one needn't wait.
+$("qr-hide-btn").onclick = async () => {
+  try {
+    const response = await fetch("/sessions/" + session.id + "/qr/hide", {
+      method: "POST",
+      headers: { Authorization: "Bearer " + session.token },
+      cache: "no-store",
+    });
+    if (!response.ok) throw new Error("HTTP " + response.status);
+    qrHidden = true;
+    overlay = null;
+    render();
+  } catch {
+    $("qr-hide-btn").textContent = "Couldn't hide it. Try again";
+  }
 };
 
 $("reload-btn").onclick = () => {

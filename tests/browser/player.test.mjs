@@ -264,7 +264,94 @@ try {
   check('the new name applies from the next room', await until(async () =>
     (await frameSrc(joiner)) === room('NEXT', 'GROSSER%20HAN') && joinerRooms.length === 2));
 
-  const tokens = [s1, s2, s3].map((night) => night.subscriber_token);
+  // 15. Hide QR on TV: the TV shows its QR until any phone hides it. Two phones are on one night
+  // with their menus open when one hides it. A missing button reads as hidden, so each "gone"
+  // check needs a sighting first, or it would pass before the button exists.
+  const s4 = await newNight();
+  const tvQrHidden = async () =>
+    (await api('GET', `/sessions/${s4.session_id}`, s4.publisher_token)).qr_hidden;
+  const showQr = () => api('POST', `/sessions/${s4.session_id}/qr/show`, s4.publisher_token);
+  // Through the DOM, as in 14; a missing element fails the check after it instead of the run.
+  const tapOn = (p, id) => p.$eval(`#${id}`, (el) => el.click()).catch(() => {});
+  const phoneLoads = []; // the phones' jackbox.tv loads
+  let failNextHide = false;
+  // A joined phone in a browser context of its own: a second tab in one context hides the
+  // first, and a hidden page closes its stream.
+  const openPhone = async () => {
+    const phone = await (await browser.createBrowserContext()).newPage();
+    phone.on('pageerror', (error) => check(`no uncaught error in a phone's page: ${error.message}`, false));
+    await phone.setRequestInterception(true);
+    phone.on('request', (request) => {
+      const url = request.url();
+      requested.push(url);
+      if (url.startsWith('https://jackbox.tv/')) {
+        phoneLoads.push(url);
+        return request.respond({ status: 200, contentType: 'text/html', body: '<p>jackbox.tv stub</p>' });
+      }
+      if (failNextHide && url.endsWith('/qr/hide')) {
+        failNextHide = false;
+        return request.respond({ status: 503, contentType: 'text/plain', body: 'down' });
+      }
+      request.continue();
+    });
+    await phone.goto(`${base}/j${fragment(s4)}`);
+    await phone.type('#name-input', 'qr');
+    await phone.click('#name-save');
+    return phone;
+  };
+  const hider = await openPhone();
+  const watcher = await openPhone();
+  await publish(s4, 'HIDE');
+  await until(async () => (await frameSrc(hider)) === room('HIDE', 'QR') &&
+    (await frameSrc(watcher)) === room('HIDE', 'QR') && phoneLoads.length === 2);
+
+  await tapOn(hider, 'menu-btn');
+  await tapOn(watcher, 'menu-btn');
+  const offered = await until(async () =>
+    (await visible('qr-hide-btn', hider)) && (await visible('qr-hide-btn', watcher)));
+  check('the menu offers Hide QR on TV while the TV QR is up',
+    offered && (await text('qr-hide-btn', hider)) === 'Hide QR on TV');
+
+  await tapOn(hider, 'qr-hide-btn');
+  const hidOnRelay = await until(async () => (await tvQrHidden()) === true);
+  check('Hide QR on TV hides it on the relay', hidOnRelay);
+  const menuClosed = await until(async () => !(await visible('menu-panel', hider)));
+  await tapOn(hider, 'menu-btn');
+  check('the button is gone after hiding', offered && menuClosed &&
+    (await visible('menu-panel', hider)) && !(await visible('qr-hide-btn', hider)));
+  check('a second open phone loses the button too', offered && await until(async () =>
+    (await visible('menu-panel', watcher)) && !(await visible('qr-hide-btn', watcher))));
+  await sleep(500); // time for a reload to show up, if there were one
+  check('hiding does not reload the running game', hidOnRelay && phoneLoads.length === 2 &&
+    (await frameSrc(hider)) === room('HIDE', 'QR') && (await frameSrc(watcher)) === room('HIDE', 'QR'));
+
+  await showQr();
+  const back = await until(async () =>
+    (await visible('qr-hide-btn', hider)) && (await visible('qr-hide-btn', watcher)));
+  check('the host showing it again brings the button back', back);
+  await watcher.evaluate(() => onEvent({ code: 'HIDE', ts: 1 })); // as from a relay without the flag
+  check('an event without the QR flag counts as hidden', back && !(await visible('qr-hide-btn', watcher)));
+
+  failNextHide = true;
+  await tapOn(hider, 'qr-hide-btn');
+  check('a failed hide says so and keeps the button', await until(async () =>
+    (await text('qr-hide-btn', hider)) === "Couldn't hide it. Try again") &&
+    (await visible('qr-hide-btn', hider)));
+  await tapOn(hider, 'menu-close');
+  await tapOn(hider, 'menu-btn');
+  const relabelled = (await text('qr-hide-btn', hider)) === 'Hide QR on TV';
+  await tapOn(hider, 'qr-hide-btn');
+  check('reopening the menu resets the label, and a retry hides it',
+    relabelled && await until(async () => (await tvQrHidden()) === true));
+
+  await showQr();
+  await tapOn(hider, 'menu-btn'); // the retry closed it
+  const again = await until(() => visible('qr-hide-btn', hider));
+  await endNight(s4);
+  check('a night that has ended offers no button', again && await until(async () =>
+    (await visible('menu-panel', hider)) && !(await visible('qr-hide-btn', hider))));
+
+  const tokens = [s1, s2, s3, s4].map((night) => night.subscriber_token);
   check('no request URL carries a token (the fragment is never sent)',
     requested.every((url) => !tokens.some((token) => url.split('#')[0].includes(token))));
 } finally {
