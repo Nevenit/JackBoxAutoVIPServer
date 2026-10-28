@@ -144,7 +144,7 @@ change.
 **It closes when:**
 - the relay says the QR is hidden (polled every couple of seconds; network errors keep it up);
 - the session is gone (404/401);
-- someone clicks ×, which first tells the relay "hidden";
+- someone clicks ×, which takes the card off the screen at once and then tells the relay "hidden";
 - the launcher exits.
 
 **Other rules for the card:**

@@ -216,8 +216,8 @@ def show_card(credentials, *, keeps_showing=None, hide=None, launcher=None) -> N
     def poll():
         # An override-redirect window is stacked by the X server alone, so a
         # game window of that kind mapped after the card would cover it for
-        # good. Raising it never moves the keyboard focus. First, so a slow
-        # keeps_showing() doesn't delay it.
+        # good. Raising it never moves the keyboard focus. Raised first, so a
+        # slow keeps_showing() doesn't delay it.
         root.lift()
         if launcher_gone(launcher) or not keeps_showing():
             root.destroy()

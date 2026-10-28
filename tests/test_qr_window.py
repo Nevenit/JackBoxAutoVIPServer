@@ -218,7 +218,8 @@ def test_card_mode_reads_the_launchers_pid_before_asking_the_relay(monkeypatch):
     pids = iter(range(4000, 4010))  # a new answer on every call
 
     def getppid():
-        order.append(("getppid", pid := next(pids)))
+        pid = next(pids)
+        order.append(("getppid", pid))
         return pid
 
     asked_the_relay = qr_window.session_status
