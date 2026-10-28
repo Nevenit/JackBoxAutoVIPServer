@@ -22,6 +22,8 @@ PAIRING_TIMEOUT_SECONDS = 120.0
 # just locked, and a phone that wakes up follows the night anyway.
 REUSED_NIGHT_PAIRING_TIMEOUT_SECONDS = 15.0
 POLL_SECONDS = 1.0
+# How often an open QR card asks the relay whether it should still be up.
+CARD_POLL_SECONDS = 2.0
 
 
 @dataclass(frozen=True)
@@ -103,25 +105,40 @@ def qr_payload(credentials: SessionCredentials) -> str:
     )
 
 
-def subscriber_count(credentials: SessionCredentials, *, call=_urllib_call) -> int:
+@dataclass(frozen=True)
+class SessionStatus:
+    """What the relay says about tonight's session right now."""
+
+    subscribers: int
+    qr_hidden: bool
+
+
+def session_status(
+    credentials: SessionCredentials, *, call=_urllib_call
+) -> SessionStatus:
     body = call(
         f"{credentials.base_url}/sessions/{credentials.session_id}",
         "GET",
         credentials.publisher_token,
     )
-    return int(body["subscribers"])
+    # No flag (an older relay) means nobody can have hidden the QR.
+    return SessionStatus(int(body["subscribers"]), bool(body.get("qr_hidden", False)))
 
 
-def _delete(credentials: SessionCredentials, suffix: str, call) -> bool:
-    """DELETE under the session with the publisher token. Never raises.
+def subscriber_count(credentials: SessionCredentials, *, call=_urllib_call) -> int:
+    return session_status(credentials, call=call).subscribers
 
-    Every caller is tidying up on an exit or failure path, where raising
-    helps nobody.
+
+def _quietly(credentials: SessionCredentials, method: str, suffix: str, call) -> bool:
+    """`method` under the session with the publisher token. Never raises.
+
+    Every caller is tidying up on an exit path or doing something the game can
+    do without, and a relay that is down must not get in the game's way.
     """
     try:
         call(
             f"{credentials.base_url}/sessions/{credentials.session_id}{suffix}",
-            "DELETE",
+            method,
             credentials.publisher_token,
         )
     except Exception:
@@ -131,7 +148,7 @@ def _delete(credentials: SessionCredentials, suffix: str, call) -> bool:
 
 def delete_session(credentials: SessionCredentials, *, call=_urllib_call) -> bool:
     """Free the session's capacity. Never raises."""
-    return _delete(credentials, "", call)
+    return _quietly(credentials, "DELETE", "", call)
 
 
 def clear_room(credentials: SessionCredentials, *, call=_urllib_call) -> bool:
@@ -139,7 +156,50 @@ def clear_room(credentials: SessionCredentials, *, call=_urllib_call) -> bool:
 
     Never raises, like delete_session.
     """
-    return _delete(credentials, "/code", call)
+    return _quietly(credentials, "DELETE", "/code", call)
+
+
+def hide_qr(credentials: SessionCredentials, *, call=_urllib_call) -> bool:
+    """Hide the TV's QR card for the rest of the night. Never raises."""
+    return _quietly(credentials, "POST", "/qr/hide", call)
+
+
+def show_qr(credentials: SessionCredentials, *, call=_urllib_call) -> bool:
+    """Bring the TV's QR card back. Never raises; True means the relay agreed."""
+    return _quietly(credentials, "POST", "/qr/show", call)
+
+
+def card_wanted(
+    credentials: SessionCredentials, status: SessionStatus, *, show=show_qr
+) -> bool:
+    """Should this launch put the QR card up?
+
+    Yes while nobody has hidden the QR. A hidden QR comes back when no phone is
+    connected, since then nobody is following the night. If the relay won't
+    show it again there is no card: it would close on its first poll, finding
+    the QR still hidden.
+    """
+    if not status.qr_hidden:
+        return True
+    if status.subscribers == 0:
+        return show(credentials)
+    return False
+
+
+def card_should_stay(credentials: SessionCredentials, *, call=_urllib_call) -> bool:
+    """One poll of an open card: should it stay up?
+
+    It closes when a phone hides the QR, or when the night is gone (404, or 401
+    for a token that is not ours). Anything else (unreachable, a 5xx, a garbled
+    body) says nothing about the QR, so the card stays: a blip must never take
+    it off the TV.
+    """
+    try:
+        return not session_status(credentials, call=call).qr_hidden
+    except urllib.error.HTTPError as exc:
+        return exc.code not in (401, 404)
+    except Exception:
+        return True
 
 
 def _write_private(path, text: str) -> None:

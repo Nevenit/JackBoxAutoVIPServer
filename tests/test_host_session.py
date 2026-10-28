@@ -13,15 +13,21 @@ from host.session import (
     Night,
     PairingWaiter,
     SessionCredentials,
+    SessionStatus,
+    card_should_stay,
+    card_wanted,
     clear_room,
     create_session,
     credentials_from_env,
     delete_session,
+    hide_qr,
     load_night,
     main,
     qr_payload,
     resume_or_create,
     save_night,
+    session_status,
+    show_qr,
     subscriber_count,
     write_session_env,
 )
@@ -151,6 +157,19 @@ def test_subscriber_count_reads_the_session_with_the_publisher_token():
     ]
 
 
+def test_session_status_reads_the_count_and_the_qr_flag():
+    call = RecordingCall({"subscribers": 1, "expires_at": 1.0, "qr_hidden": True})
+    assert session_status(CREDENTIALS, call=call) == SessionStatus(1, True)
+    assert call.calls == [
+        ("https://relay.example/sessions/sess-1", "GET", "pub-token")
+    ]
+
+
+def test_an_older_relay_without_the_flag_reads_as_showing():
+    call = RecordingCall({"subscribers": 1, "expires_at": 1.0})
+    assert session_status(CREDENTIALS, call=call).qr_hidden is False
+
+
 # --- deletion -----------------------------------------------------------
 
 def test_delete_session_deletes_with_the_publisher_token():
@@ -180,6 +199,31 @@ def test_clear_room_deletes_the_code_with_the_publisher_token():
 def test_clear_room_never_raises():
     # Same exit path as delete_session, same rule.
     assert clear_room(CREDENTIALS, call=RecordingCall(exception=OSError("x"))) is False
+
+
+# --- hiding and showing the TV's QR card --------------------------------
+
+def test_hide_qr_posts_with_the_publisher_token():
+    call = RecordingCall()
+    assert hide_qr(CREDENTIALS, call=call) is True
+    assert call.calls == [
+        ("https://relay.example/sessions/sess-1/qr/hide", "POST", "pub-token")
+    ]
+
+
+def test_show_qr_posts_with_the_publisher_token():
+    call = RecordingCall()
+    assert show_qr(CREDENTIALS, call=call) is True
+    assert call.calls == [
+        ("https://relay.example/sessions/sess-1/qr/show", "POST", "pub-token")
+    ]
+
+
+@pytest.mark.parametrize("set_qr", [hide_qr, show_qr])
+def test_hide_and_show_never_raise(set_qr):
+    # A relay that is down must not get in the game's way.
+    call = RecordingCall(exception=urllib.error.URLError("down"))
+    assert set_qr(CREDENTIALS, call=call) is False
 
 
 # --- the environment file -----------------------------------------------
@@ -397,6 +441,81 @@ def test_a_night_file_that_fails_the_relay_checks_counts_as_no_night(
     path = tmp_path / "night.json"
     path.write_text(json.dumps(contents))
     assert load_night(path) is None
+
+
+# --- the TV's QR card -------------------------------------------------------
+# Two decisions: whether a launch puts the card up, and whether an open card
+# stays up on each poll.
+
+class RecordingShow:
+    """Stands in for show_qr, so the decision tests make no request."""
+
+    def __init__(self, result):
+        self.result = result
+        self.calls = []
+
+    def __call__(self, credentials):
+        self.calls.append(credentials)
+        return self.result
+
+
+def test_a_qr_nobody_has_hidden_is_shown():
+    show = RecordingShow(True)
+    assert card_wanted(CREDENTIALS, SessionStatus(3, False), show=show) is True
+    assert show.calls == []
+
+
+def test_a_hidden_qr_stays_hidden_while_a_phone_is_connected():
+    # The stub would say yes, so only the decision can make this False.
+    show = RecordingShow(True)
+    assert card_wanted(CREDENTIALS, SessionStatus(1, True), show=show) is False
+    assert show.calls == []
+
+
+def test_a_hidden_qr_comes_back_when_nobody_is_connected():
+    show = RecordingShow(True)
+    assert card_wanted(CREDENTIALS, SessionStatus(0, True), show=show) is True
+    assert show.calls == [CREDENTIALS]
+
+
+def test_a_hidden_qr_stays_hidden_if_the_relay_refuses_to_show_it():
+    # The card would close on its first poll, so a refusal skips it.
+    show = RecordingShow(False)
+    assert card_wanted(CREDENTIALS, SessionStatus(0, True), show=show) is False
+    assert show.calls == [CREDENTIALS]
+
+
+def status_body(*, qr_hidden):
+    return {"subscribers": 1, "expires_at": 1.0, "qr_hidden": qr_hidden}
+
+
+def test_the_card_stays_while_the_qr_is_not_hidden():
+    call = RecordingCall(status_body(qr_hidden=False))
+    assert card_should_stay(CREDENTIALS, call=call) is True
+
+
+def test_the_card_closes_once_a_phone_hides_the_qr():
+    call = RecordingCall(status_body(qr_hidden=True))
+    assert card_should_stay(CREDENTIALS, call=call) is False
+
+
+@pytest.mark.parametrize("code", [401, 404])
+def test_the_card_closes_when_the_night_is_gone(code):
+    # 404: the relay forgot the session. 401: the id is there but the token
+    # is not ours. Either way there is no QR left to show.
+    call = RecordingCall(exception=http_error(code))
+    assert card_should_stay(CREDENTIALS, call=call) is False
+
+
+@pytest.mark.parametrize("failure", [
+    urllib.error.URLError("down"),
+    http_error(500),
+    ValueError("bad json"),
+], ids=["unreachable", "server-error", "garbled-body"])
+def test_the_card_stays_up_through_a_relay_blip(failure):
+    # A blip says nothing about the QR, and must never take it off the TV.
+    call = RecordingCall(exception=failure)
+    assert card_should_stay(CREDENTIALS, call=call) is True
 
 
 # --- main() ---------------------------------------------------------------
@@ -651,3 +770,28 @@ async def test_the_real_client_resumes_a_real_session_until_the_relay_forgets_it
         assert replaced.created
         assert replaced.credentials.session_id != first.credentials.session_id
         assert state.session(replaced.credentials.session_id) is not None
+
+
+async def test_the_real_client_hides_and_shows_a_real_qr():
+    state = RelayState(now=Clock())
+    async with serving(build_app(state)) as http:
+        base = f"https://127.0.0.1:{http.base_url.port}"
+        credentials = await asyncio.to_thread(
+            create_session, base, call=downgrading_call
+        )
+
+        async def hidden():
+            status = await asyncio.to_thread(
+                session_status, credentials, call=downgrading_call
+            )
+            return status.qr_hidden
+
+        assert await hidden() is False
+        assert await asyncio.to_thread(
+            hide_qr, credentials, call=downgrading_call
+        ) is True
+        assert await hidden() is True
+        assert await asyncio.to_thread(
+            show_qr, credentials, call=downgrading_call
+        ) is True
+        assert await hidden() is False
