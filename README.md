@@ -34,7 +34,10 @@ updates — there is nothing per-game or per-version to maintain.
 - Linux
 - Steam, with at least one Jackbox game installed
 - [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`)
-- [mitmproxy](https://mitmproxy.org/) on your `PATH` — `pipx install mitmproxy`
+- [mitmproxy](https://mitmproxy.org/) on your `PATH` — `mitmproxy` on Arch, or
+  `pipx install mitmproxy`
+- Python's `vdf` module, which `install.py` uses to edit Steam's config
+  (`python-vdf` on Arch, or `pip install vdf`)
 - `iptables` and the cgroup v1 `net_cls` controller (the redirect script mounts
   it if nothing has) — used to redirect **only the game's** traffic to the proxy.
   Setting this up is one `sudo` command per session, or a boot-time service.
@@ -42,9 +45,9 @@ updates — there is nothing per-game or per-version to maintain.
   the relay (below); it renders the QR code shown on the TV. Most distros
   package it (`qrencode` on Arch/Debian/Fedora).
 - Python's `tkinter` — also only needed for the relay; it draws the QR card
-  itself. **Already included on Arch/CachyOS** (bundled with the
-  `python` package). Debian/Ubuntu need `python3-tk`; Fedora needs
-  `python3-tkinter`.
+  itself. Arch/CachyOS need the `tk` package (the `python` package has the
+  module but not the Tk library); Debian/Ubuntu need `python3-tk`; Fedora
+  needs `python3-tkinter`.
 
 ## Setup
 
