@@ -258,7 +258,9 @@ header. Admin followers count towards the subscriber cap and its eviction rule.
 - Wrapping the Megapicker itself, or extracting anything from it.
 - Per-IP rate limiting on the relay (a known gap, documented in the homelab runbook).
 - Blobcast-era packs (Party Packs 1 and 5 are uninstalled; everything installed is ecast).
-- **Redirect at boot (later, if the per-boot `sudo` annoys).** Today `sudo ./jbvip-redirect-up.sh`
+- **Redirect at boot (later, if the per-boot `sudo` annoys).** *Done 2026-10-29 for the TV PC:
+  the script mounts net_cls when it's missing, and the README has a boot-time systemd unit.*
+  Today `sudo ./jbvip-redirect-up.sh`
   has to run after every reboot. On this PC the net_cls v1 hierarchy at `/sys/fs/cgroup/net_cls`
   is mounted by the **Mullvad VPN daemon** (for its split tunnelling), not by this project.
   Without Mullvad running, `jbvip-redirect-up.sh` fails with "net_cls cgroup v1 not mounted". A

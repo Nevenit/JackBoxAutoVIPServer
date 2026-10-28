@@ -6,15 +6,20 @@
 # is touched. mitmproxy runs OUTSIDE the cgroup, so its own upstream connections
 # are not re-redirected (no loop). Run once per session.
 #
-#   sudo ./jbvip-redirect-up.sh [PORT]        (PORT default 8081)
+#   sudo ./jbvip-redirect-up.sh [PORT] [USER]  (PORT default 8081; USER default the sudo user)
 set -euo pipefail
 
 PORT="${1:-8081}"
-USER_NAME="${SUDO_USER:-$USER}"
+# USER is for the boot-time service, which has no SUDO_USER (see the README).
+USER_NAME="${2:-${SUDO_USER:-$USER}}"
 CLASSID="0x00110011"
 NC=/sys/fs/cgroup/net_cls/jbvip
 
-[ -d /sys/fs/cgroup/net_cls ] || { echo "net_cls cgroup v1 not mounted at /sys/fs/cgroup/net_cls" >&2; exit 1; }
+# Mullvad's daemon mounts this hierarchy when it runs; without it, mount it ourselves.
+if ! mountpoint -q /sys/fs/cgroup/net_cls; then
+  mkdir -p /sys/fs/cgroup/net_cls
+  mount -t cgroup -o net_cls net_cls /sys/fs/cgroup/net_cls
+fi
 
 mkdir -p "$NC"
 echo "$CLASSID" > "$NC/net_cls.classid"

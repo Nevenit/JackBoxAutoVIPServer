@@ -35,8 +35,9 @@ updates — there is nothing per-game or per-version to maintain.
 - Steam, with at least one Jackbox game installed
 - [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`)
 - [mitmproxy](https://mitmproxy.org/) on your `PATH` — `pipx install mitmproxy`
-- `iptables` and a cgroup v1 `net_cls` hierarchy — used to redirect **only the
-  game's** traffic to the proxy. Setting this up is one `sudo` command per session.
+- `iptables` and the cgroup v1 `net_cls` controller (the redirect script mounts
+  it if nothing has) — used to redirect **only the game's** traffic to the proxy.
+  Setting this up is one `sudo` command per session, or a boot-time service.
 - [`qrencode`](https://fukuchi.org/works/qrencode/) — only needed if you use
   the relay (below); it renders the QR code shown on the TV. Most distros
   package it (`qrencode` on Arch/Debian/Fedora).
@@ -79,6 +80,29 @@ updates — there is nothing per-game or per-version to maintain.
    This redirects only the Jackbox game's `:443` and `:38203` to the proxy —
    nothing else on the machine is touched. Remove it any time with
    `sudo ./jbvip-redirect-down.sh`.
+
+   On a machine that should just work after a reboot, such as a PC under the
+   TV, install a service that does this at boot instead. Run this from the repo
+   folder. It runs this repo's script as root, so keep the folder writable only
+   by you:
+
+   ```bash
+   sudo tee /etc/systemd/system/jbvip-redirect.service >/dev/null <<EOF
+   [Unit]
+   Description=Redirect Jackbox games to the jbvip room-code proxy
+   After=network-pre.target ufw.service firewalld.service
+
+   [Service]
+   Type=oneshot
+   RemainAfterExit=yes
+   ExecStart=$PWD/jbvip-redirect-up.sh 8081 $USER
+   ExecStop=$PWD/jbvip-redirect-down.sh 8081
+
+   [Install]
+   WantedBy=multi-user.target
+   EOF
+   sudo systemctl enable --now jbvip-redirect.service
+   ```
 
    The proxy listens on port 8081. If something else is using that port, move to
    another (say 8082) in this order: remove the old redirect with
