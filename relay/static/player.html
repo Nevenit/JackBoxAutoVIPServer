@@ -195,6 +195,7 @@ function stop() {
 
 async function subscribe() {
   stop();
+  qrHidden = true; // a new stream knows nothing about the QR until its first event
   const controller = (stream = new AbortController());
   let openedAt = 0;
   try {
@@ -242,7 +243,6 @@ function start() {
   session = parseHash();
   connection = session ? "connecting" : "none";
   latest = null;
-  qrHidden = true;
   overlay = null;
   retryDelay = 1000;
   show(null);

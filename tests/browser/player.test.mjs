@@ -118,7 +118,7 @@ try {
   const visible = (id, p = page) => p.$eval(`#${id}`, (el) => el.checkVisibility()).catch(() => false);
   const text = (id, p = page) => p.$eval(`#${id}`, (el) => el.textContent).catch(() => '');
   const frameSrc = (p = page) => p.$eval('#frame', (el) => el.src).catch(() => '');
-  const setVisibility = (state) => page.evaluate((state) => {
+  const setVisibility = (state, p = page) => p.evaluate((state) => {
     Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state });
     document.dispatchEvent(new Event('visibilitychange'));
   }, state);
@@ -347,6 +347,39 @@ try {
   await showQr();
   await tapOn(hider, 'menu-btn'); // the retry closed it
   const again = await until(() => visible('qr-hide-btn', hider));
+
+  // The phone leaves with the QR up and comes back after another phone hid it. Until the first
+  // event of its new stream it knows nothing about the QR, so it must not offer the button. A real
+  // relay sends that event with the response headers, which would make this check a race; so the
+  // new stream is held open with no event, which keeps the moment between the two for as long as
+  // the check needs.
+  await hider.evaluate(() => {
+    const realFetch = window.fetch;
+    window.fetch = (url, init) => {
+      if (!window.holdSubscribe || !String(url).endsWith('/subscribe')) return realFetch(url, init);
+      window.holdSubscribe = false;
+      const body = new ReadableStream({
+        start: (controller) =>
+          init.signal.addEventListener('abort', () => controller.error(init.signal.reason)),
+      });
+      return Promise.resolve(new Response(body, {
+        status: 200, headers: { 'content-type': 'text/event-stream' },
+      }));
+    };
+    window.holdSubscribe = true;
+  });
+  await setVisibility('hidden', hider);
+  await api('POST', `/sessions/${s4.session_id}/qr/hide`, s4.subscriber_token); // another phone
+  await setVisibility('visible', hider);
+  await sleep(300); // time for the button to show, if it were going to
+  check('a phone coming back is not offered the button before the relay says the QR is up',
+    again && !(await visible('qr-hide-btn', hider)));
+  await setVisibility('hidden', hider); // ends the held stream
+  await showQr();
+  await setVisibility('visible', hider);
+  check('once the relay says the QR is up, a returning phone is offered the button again',
+    await until(() => visible('qr-hide-btn', hider)));
+
   await endNight(s4);
   check('a night that has ended offers no button', again && await until(async () =>
     (await visible('menu-panel', hider)) && !(await visible('qr-hide-btn', hider))));
