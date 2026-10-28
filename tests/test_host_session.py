@@ -11,7 +11,6 @@ import pytest
 from host import session as host_session
 from host.session import (
     Night,
-    PairingWaiter,
     SessionCredentials,
     SessionStatus,
     card_should_stay,
@@ -459,9 +458,13 @@ class RecordingShow:
         return self.result
 
 
-def test_a_qr_nobody_has_hidden_is_shown():
+@pytest.mark.parametrize("status", [
+    SessionStatus(3, False),
+    SessionStatus(0, False),
+], ids=["phones-connected", "fresh-night"])
+def test_a_qr_nobody_has_hidden_is_shown(status):
     show = RecordingShow(True)
-    assert card_wanted(CREDENTIALS, SessionStatus(3, False), show=show) is True
+    assert card_wanted(CREDENTIALS, status, show=show) is True
     assert show.calls == []
 
 
@@ -560,71 +563,6 @@ def test_main_clear_returns_zero_even_when_the_clear_fails(monkeypatch):
     assert attempted == [
         ("DELETE", "https://relay.example/sessions/sess-1/code")
     ]
-
-
-# --- PairingWaiter ------------------------------------------------------
-
-def test_the_waiter_keeps_waiting_while_no_phone_has_arrived():
-    waiter = PairingWaiter(lambda: 0, now=Clock(0.0), timeout=120.0)
-    assert waiter.poll() == PairingWaiter.WAITING
-    assert waiter.subscribers == 0
-
-
-def test_the_waiter_reports_paired_once_a_phone_subscribes():
-    waiter = PairingWaiter(lambda: 1, now=Clock(0.0), timeout=120.0)
-    assert waiter.poll() == PairingWaiter.PAIRED
-    assert waiter.subscribers == 1
-
-
-def test_the_waiter_stops_polling_once_paired():
-    calls = []
-
-    def count():
-        calls.append(1)
-        return 1
-
-    waiter = PairingWaiter(count, now=Clock(0.0), timeout=120.0)
-    waiter.poll()
-    waiter.poll()
-    assert len(calls) == 1
-
-
-def test_the_waiter_times_out_when_the_deadline_passes():
-    clock = Clock(0.0)
-    waiter = PairingWaiter(lambda: 0, now=clock, timeout=120.0)
-    assert waiter.poll() == PairingWaiter.WAITING
-    clock.t = 120.0
-    assert waiter.poll() == PairingWaiter.TIMED_OUT
-
-
-def test_a_failed_poll_does_not_end_the_wait():
-    # A one-second blip while the user is fumbling with the camera must not
-    # close the window. Only the deadline does that.
-    clock = Clock(0.0)
-    attempts = []
-
-    def flaky():
-        attempts.append(1)
-        if len(attempts) < 3:
-            raise urllib.error.URLError("connection reset")
-        return 1
-
-    waiter = PairingWaiter(flaky, now=clock, timeout=120.0)
-    assert waiter.poll() == PairingWaiter.WAITING
-    assert waiter.error is not None
-    assert waiter.poll() == PairingWaiter.WAITING
-    assert waiter.poll() == PairingWaiter.PAIRED
-    assert waiter.error is None
-
-
-def test_the_waiter_reports_the_time_it_has_left():
-    clock = Clock(0.0)
-    waiter = PairingWaiter(lambda: 0, now=clock, timeout=120.0)
-    assert waiter.remaining() == 120.0
-    clock.t = 30.0
-    assert waiter.remaining() == 90.0
-    clock.t = 500.0
-    assert waiter.remaining() == 0.0
 
 
 # --- the urllib transport itself ----------------------------------------

@@ -1,27 +1,21 @@
-"""Host-side relay client: keep one session for the night, watch for a phone,
-clear the room.
+"""Host-side relay client: keep one session for the night, decide when the QR
+card shows and stays, clear the room.
 
-Stdlib only, with an injected transport and clock, so all of it tests without
-a network and without a display. Deliberately imports no GUI toolkit: the
-window in host/qr_window.py is glue over this, not the other way round.
+Stdlib only, with an injected transport, so all of it tests without a network
+and without a display. Deliberately imports no GUI toolkit: the card in
+host/qr_window.py is glue over this, not the other way round.
 """
 import argparse
 import json
 import os
 import shlex
 import sys
-import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
 REQUEST_TIMEOUT_SECONDS = 5.0
-PAIRING_TIMEOUT_SECONDS = 120.0
-# A later pack launch that finds no phone connected: most likely every phone is
-# just locked, and a phone that wakes up follows the night anyway.
-REUSED_NIGHT_PAIRING_TIMEOUT_SECONDS = 15.0
-POLL_SECONDS = 1.0
 # How often an open QR card asks the relay whether it should still be up.
 CARD_POLL_SECONDS = 2.0
 
@@ -326,48 +320,6 @@ def resume_or_create(base_url: str, night_path, *, call=_urllib_call) -> Night:
     # is ever seen in practice.
     save_night(night_path, credentials)
     return Night(credentials, 0, created=True)
-
-
-class PairingWaiter:
-    """Poll until a phone subscribes, or give up.
-
-    Owns no clock, no display and no sleep of its own: `now` and `count` are
-    injected, so the whole poll-and-timeout behaviour is a unit test.
-    """
-
-    WAITING = "waiting"
-    PAIRED = "paired"
-    TIMED_OUT = "timed-out"
-
-    def __init__(self, count, *, now=time.monotonic,
-                 timeout: float = PAIRING_TIMEOUT_SECONDS):
-        self._count = count
-        self._now = now
-        self._deadline = now() + timeout
-        self.state = self.WAITING
-        self.subscribers = 0
-        self.error: str | None = None
-
-    def poll(self) -> str:
-        """One tick. WAITING means call again later."""
-        if self.state != self.WAITING:
-            return self.state
-        try:
-            self.subscribers = self._count()
-        except Exception as exc:
-            # A blip must not end the wait; only the deadline does.
-            self.error = str(exc)
-        else:
-            self.error = None
-            if self.subscribers >= 1:
-                self.state = self.PAIRED
-                return self.state
-        if self._now() >= self._deadline:
-            self.state = self.TIMED_OUT
-        return self.state
-
-    def remaining(self) -> float:
-        return max(0.0, self._deadline - self._now())
 
 
 def main(argv=None) -> int:

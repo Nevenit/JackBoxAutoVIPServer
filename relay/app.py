@@ -221,8 +221,8 @@ class Relay:
         refusal = self._refuse(request, session_id)
         if refusal is not None:
             return refusal
-        # Deliberately does not touch(): the QR window polls this once a
-        # second, and polling must not be able to keep a session alive.
+        # Deliberately does not touch(): the QR card polls this every couple
+        # of seconds, and polling must not be able to keep a session alive.
         return JSONResponse(
             {
                 "subscribers": len(self._queues.get(session_id, ())),

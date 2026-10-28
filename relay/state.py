@@ -291,7 +291,7 @@ class RelayState:
         while the session has no room, the roomless deadline. Usually it is
         the idle one, but late in a session kept alive by a held subscribe
         stream the ceiling binds, and a session with no room dies at the
-        roomless deadline however often it is touched. Callers (the QR window,
+        roomless deadline however often it is touched. Callers (the QR card,
         the API response) should see whichever one will really end the session.
         """
         session = self.session(session_id)
