@@ -119,10 +119,17 @@ class RateLimiter:
         self._now = now
         self._hits: list[float] = []
 
-    def allow(self) -> bool:
+    def _prune(self) -> None:
         cutoff = self._now() - self._window
         self._hits = [hit for hit in self._hits if hit > cutoff]
-        if len(self._hits) >= self._limit:
+
+    def exhausted(self) -> bool:
+        """True when allow() would refuse. Charges nothing."""
+        self._prune()
+        return len(self._hits) >= self._limit
+
+    def allow(self) -> bool:
+        if self.exhausted():
             return False
         self._hits.append(self._now())
         return True

@@ -1156,3 +1156,16 @@ async def test_admin_streams_are_counted_and_capped_like_any_other():
                 relay._queues[s["session_id"]][asyncio.Queue()] = "guest"
             assert await admin_header(http, s) == "guest"
             assert len(relay._queues[s["session_id"]]) <= MAX_SUBSCRIBERS_PER_SESSION
+
+
+async def test_the_right_key_never_spends_the_guess_budget():
+    _, app = make(
+        admin_guess_limiter_factory=lambda: RateLimiter(limit=2, window_seconds=60.0)
+    )
+    async with serving(app) as http:
+        s = await new_session(http)
+        await register(http, s)
+        assert [await admin_header(http, s, ADMIN_KEY) for _ in range(3)] == ["admin"] * 3
+        assert [await admin_header(http, s, OTHER_ADMIN_KEY) for _ in range(2)] == ["wrong"] * 2
+        assert await admin_header(http, s, OTHER_ADMIN_KEY) == "limited"
+        assert await admin_header(http, s, ADMIN_KEY) == "limited"

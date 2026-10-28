@@ -550,3 +550,11 @@ def test_register_admin_rejects_a_bad_head_start(head):
 def test_register_admin_unknown_session_is_a_key_error():
     with pytest.raises(KeyError):
         make().register_admin("nope", KEY, 1.0)
+
+
+def test_exhausted_charges_nothing():
+    limiter = RateLimiter(limit=1, window_seconds=60.0)
+    assert not limiter.exhausted() and not limiter.exhausted()
+    assert limiter.allow()
+    assert limiter.exhausted()
+    assert not limiter.allow()

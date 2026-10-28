@@ -356,19 +356,24 @@ class Relay:
     def _admin_status(self, request, session_id) -> str:
         """What the request's X-Jbvip-Admin key makes this stream.
 
-        Run after the subscriber-token check. Any key sent to a session with a
-        registration spends the guess budget; once it is spent no key is
-        checked at all, so the real one is refused too until the minute rolls.
+        Run after the subscriber-token check. Only a wrong key spends the
+        guess budget, so the admin phone's own reconnects never lock it out.
+        Once the budget is spent no key is checked at all: the real one gets
+        `limited` too until the minute rolls, which keeps brute force stopped.
         """
         key = request.headers.get("x-jbvip-admin") or None
         session = self.state.session(session_id)
-        if key is not None and session is not None and session.admin_key is not None:
-            limiter = self._admin_guess_limiters.setdefault(
-                session_id, self._new_admin_guess_limiter()
-            )
-            if not limiter.allow():
-                return "limited"
-        return self.state.admin_status(session_id, key)
+        if key is None or session is None or session.admin_key is None:
+            return self.state.admin_status(session_id, key)
+        limiter = self._admin_guess_limiters.setdefault(
+            session_id, self._new_admin_guess_limiter()
+        )
+        if limiter.exhausted():
+            return "limited"
+        status = self.state.admin_status(session_id, key)
+        if status == "wrong":
+            limiter.allow()
+        return status
 
     async def subscribe(self, request):
         session_id = request.path_params["session_id"]
