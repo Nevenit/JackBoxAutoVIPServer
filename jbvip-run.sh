@@ -108,14 +108,23 @@ LOG_MARKER="jbvip-relay:"
 # delimiter, because flow_detail=1 truncates long URLs mid-code.
 REDACT_CODES='s#(/rooms/)[A-Za-z0-9]+#\1<redacted>#g'
 MITM=""
-# Tonight's session, filled in by the pairing step below. Set before the trap,
+# The QR card, once start_qr_card has started it. Set before the trap, which
+# reads it.
+CARD=""
+# Tonight's session, filled in by the session step below. Set before the trap,
 # which reads them, and never exported: the token reaches mitmdump alone (see
 # the mitmdump line below), never the game. `+x` also drops an inherited export.
 declare +x SESSION_ID="" SESSION_TOKEN=""
 
 cleanup() {
-  # First, so the proxy port frees while the clear below runs: the next pack's
-  # launcher needs it, and the clear can take seconds.
+  # First, so the card leaves the TV with the game, not after the clear below.
+  # (After a SIGKILL this never runs: the card then closes itself, seeing the
+  # launcher gone.)
+  if [ -n "$CARD" ]; then
+    kill "$CARD" 2>/dev/null || true
+  fi
+  # Then the proxy, so its port frees while the clear below runs: the next
+  # pack's launcher needs it, and the clear can take seconds.
   if [ -n "$MITM" ]; then
     kill "$MITM" 2>/dev/null || true
   fi
@@ -139,9 +148,9 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# The CA bundle and port checks come before the pairing window below, like the
-# redirect check above: on a night that can't capture a room code there is
-# nothing to ask anyone to scan.
+# The CA bundle and port checks come before the relay session below, like the
+# redirect check above: a night that can't capture a room code never touches the
+# relay.
 
 # The CA file the game's statically-linked libcurl reads (it ignores SSL_CERT_FILE).
 SYS_CA=""
@@ -171,13 +180,12 @@ if port_up; then
   run_plain "port $PORT is already in use, probably by the last launch's proxy still closing; wait a few seconds and launch again. To use another port, e.g. 8082, run sudo $REPO/jbvip-redirect-down.sh $PORT, then sudo $REPO/jbvip-redirect-up.sh 8082, and set JBVIP_PROXY_PORT=8082 in ~/.config/jbvip/relay.env"
 fi
 
-# --- pair a phone, if a relay is configured ---------------------------------
-# Deliberately before mitmdump and the game: fighting a fullscreen game for
-# stacking order under Wayland is unreliable, and there is a natural gap here.
+# --- tonight's relay session, if a relay is configured ----------------------
+# Before mitmdump, which needs its credentials. This shows nothing: the QR code
+# goes on the TV later, over the game (see start_qr_card).
 SESSION_ENV="$STATE/session.env"
-# The session is tonight's, not this launch's: the QR window resumes the one
-# saved here (or makes one and saves it), and only shows its QR code when no
-# phone is connected yet, so switching packs doesn't mean scanning again.
+# The session is tonight's, not this launch's: this resumes the one saved here
+# (or makes one and saves it), so switching packs doesn't mean scanning again.
 NIGHT_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/jbvip/night.json"
 if [ -n "$JBVIP_RELAY_URL" ]; then
   # The `if` matters: this exits non-zero when the relay is unreachable, and
@@ -238,6 +246,20 @@ if [ "$ready" != 1 ]; then
   tail -n 20 "$STATE/mitm.log" >&2
   run_plain "proxy did not come up on 127.0.0.1:$PORT within 6s; run 'mitmdump --version' in a terminal to check mitmdump, and install it with 'pipx install mitmproxy' if it is missing"
 fi
+
+# The QR card goes on the TV, over the game. In the background, so the game never
+# waits for it: it asks the relay whether to appear, and a dead relay can hold
+# that up for ~10 s. Started only now, with interception up, so a launch that
+# fell back to no room codes never shows it. It stays out of the redirected
+# cgroup below, like this launcher, so its HTTPS doesn't go into the proxy. Its
+# credentials come from $NIGHT_FILE, never the command line. cleanup() stops it,
+# and it closes itself when this launcher is gone.
+start_qr_card() {
+  [ -n "$SESSION_ID" ] || return 0
+  python3 -m host.qr_window --card --night-file "$NIGHT_FILE" &
+  CARD=$!
+}
+start_qr_card
 
 # Per-game trust bundle: system CAs + mitmproxy CA.
 tmpbundle="$(mktemp "$STATE/cabundle.XXXXXX")"

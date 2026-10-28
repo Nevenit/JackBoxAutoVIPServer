@@ -38,10 +38,10 @@ updates — there is nothing per-game or per-version to maintain.
 - `iptables` and a cgroup v1 `net_cls` hierarchy — used to redirect **only the
   game's** traffic to the proxy. Setting this up is one `sudo` command per session.
 - [`qrencode`](https://fukuchi.org/works/qrencode/) — only needed if you use
-  the relay (below); it renders the pairing QR code. Most distros package it
-  (`qrencode` on Arch/Debian/Fedora).
-- Python's `tkinter` — also only needed for the relay; it draws the pairing
-  window itself. **Already included on Arch/CachyOS** (bundled with the
+  the relay (below); it renders the QR code shown on the TV. Most distros
+  package it (`qrencode` on Arch/Debian/Fedora).
+- Python's `tkinter` — also only needed for the relay; it draws the QR card
+  itself. **Already included on Arch/CachyOS** (bundled with the
   `python` package). Debian/Ubuntu need `python3-tk`; Fedora needs
   `python3-tkinter`.
 
@@ -128,11 +128,9 @@ If a launch can't capture codes — the redirect from step 3 isn't up, there is 
 system CA bundle, bubblewrap can't start the game's sandbox, the proxy port is
 already in use, or mitmdump won't start — the game still starts, just without
 room-code capture, and a desktop notification (if `notify-send` is installed)
-says what is wrong and how to fix it. The first four are caught before the QR
-window (below) would appear, so there is nothing to scan; a mitmdump that won't
-start is only noticed after it. A busy port is
-usually the last launch's proxy still closing after you quit a pack: wait a few
-seconds and launch again.
+says what is wrong and how to fix it. None of these launches shows the QR card
+(below), so there is nothing to scan. A busy port is usually the last launch's
+proxy still closing after you quit a pack: wait a few seconds and launch again.
 
 ## Reaching a Phone That Isn't on Your Wifi (optional)
 
@@ -172,8 +170,8 @@ the session, so phones stay on it and go back to waiting. The relay ends a
 session on its own once it has had no room for 2 hours; `relay/README.md` has
 the other limits.
 
-Once `JBVIP_RELAY_URL` is configured, the first launch of the night shows a small
-QR-code window before the game starts. Scan it with a phone's camera: it opens a
+Once `JBVIP_RELAY_URL` is configured, the first launch of the night puts a QR
+code on the TV, over the game. Scan it with a phone's camera: it opens a
 page on the relay (`/j`) that asks for a name — once per phone — and then shows
 jackbox.tv in a frame with the room code and that name already filled in. You
 still tap Play yourself. From then on the phone follows the host from game to
@@ -186,16 +184,16 @@ of the page's own link, and **Share link…** sends it on. Whoever opens that li
 joins the same night, so share it only with people you would give the room code
 to.
 
-The QR window appears only when no phone is connected: on the first launch of the
-night, or after everyone has left or locked their phone (a page stays connected
-only while it is on screen). Switching packs with phones still on the page shows
-nothing and starts the game straight away. The window closes by itself as soon as
-a phone joins. Press **Skip** to close it at once; if you leave it, it gives up
-after 120 seconds and starts the game anyway. On a later pack launch of the same
-night it gives up after 15 seconds, because phones that wake up follow along
-anyway. A dead or unreachable relay is
-handled the same way: the game **always** launches, LAN-only if the relay can't
-be reached and with phones following it if it can.
+The QR sits on a white card in the top-right of the screen, over the game, until
+someone decides everyone is in: tap **Hide QR on TV** in the page's ⋯ menu on a
+phone, or click the × on the card at the PC. It stays hidden for the rest of the
+night, through every pack you switch to. A launch while no phone is connected
+(everyone has left or locked their phone; a page stays connected only while it
+is on screen) brings it back, and so does the first launch of a new night. The
+card never takes the keyboard from the game, and the game never waits for it: a
+dead or unreachable relay changes nothing about that, and the game **always**
+launches, LAN-only if the relay can't be reached and with phones following it if
+it can.
 
 If the relay does not seem to be working, launch a game once and then look at
 `~/.local/state/jbvip/last-run.log`. The launcher keeps the proxy log there —

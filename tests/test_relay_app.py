@@ -666,7 +666,7 @@ async def test_a_full_session_drops_its_oldest_stream_for_a_new_phone():
 # --- session info -------------------------------------------------------
 
 async def test_the_publisher_can_see_that_a_phone_arrived():
-    # This is how the QR window knows to close itself.
+    # This is how the QR card knows whether any phone is connected.
     _, app = make()
     async with serving(app) as http:
         session = await new_session(http)
@@ -683,8 +683,8 @@ async def test_the_publisher_can_see_that_a_phone_arrived():
 
 
 async def test_polling_the_session_does_not_keep_it_alive():
-    # Only publishing and subscribing count as activity. The QR window polls
-    # this once a second and must not be able to extend a session by doing so.
+    # Only publishing and subscribing count as activity. The QR card polls this
+    # every couple of seconds and must not be able to extend a session by doing so.
     # Poll repeatedly *within* the idle window (each poll must succeed, since
     # the session is genuinely still alive), then cross the boundary the
     # original deadline set and confirm the session expired on schedule

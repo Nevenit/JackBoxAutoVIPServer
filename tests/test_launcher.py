@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -704,6 +705,114 @@ def test_the_qr_window_is_handed_tonights_night_file():
     assert '--night-file "$NIGHT_FILE"' in next(
         line for line in text.splitlines() if "host.qr_window" in line
     )
+
+
+def test_the_qr_card_starts_once_interception_is_up():
+    # After every fallback, so a launch without room codes never shows it, and
+    # before the game, which it sits over.
+    text = LAUNCHER.read_text()
+    call = text.index("\nstart_qr_card\n")  # the call: a line of its own
+    assert text.index('if [ "$ready" != 1 ]; then') < call
+    assert call < text.index('tmpbundle="$(mktemp')
+    assert text.rindex('run_plain "') < call
+
+
+def fake_python3(tmp_path):
+    """A `python3` that records its arguments, one per line, then keeps running
+    for 30 s like the card does. Returns its directory (for PATH) and the file
+    the arguments land in."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    args = tmp_path / "python3-args"
+    fake = bin_dir / "python3"
+    fake.write_text(f'#!/bin/sh\nprintf "%s\\n" "$@" > "{args}"\nexec sleep 30\n')
+    fake.chmod(0o755)
+    return bin_dir, args
+
+
+def run_start_qr_card(tmp_path, session_id: str):
+    """Run the launcher's real start_qr_card, then stop the fake card it started.
+
+    Returns (process, the file the card's arguments were recorded in, seconds
+    taken). The real python3 never runs, so no real card can open a window.
+    """
+    bin_dir, args = fake_python3(tmp_path)
+    script = (
+        "set -euo pipefail\n"
+        f'SESSION_ID="{session_id}"\nNIGHT_FILE=/x/night.json\nCARD=""\n'
+        + launcher_function("start_qr_card")
+        + '\nstart_qr_card\necho "card=$CARD"\n'
+        # The card records its arguments from its own process: wait for that
+        # before stopping it, or the kill can land first.
+        'if [ -n "$CARD" ]; then\n'
+        f'  for _ in $(seq 1 50); do [ -s "{args}" ] && break; sleep 0.1; done\n'
+        '  kill "$CARD"\n'
+        "fi\n"
+    )
+    started = time.monotonic()
+    done = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True,
+        env={"PATH": f"{bin_dir}:/usr/bin:/bin"},
+    )
+    return done, args, time.monotonic() - started
+
+
+def test_the_launch_does_not_wait_for_the_qr_card(tmp_path):
+    # The card asks the relay whether to appear, and a dead one can hold that up
+    # for ~10 s. The fake card here runs for 30, so a start_qr_card that waited
+    # for it could not finish in 2.
+    done, args, took = run_start_qr_card(tmp_path, "s")
+    assert done.returncode == 0, done.stderr
+    assert took < 2
+    assert done.stdout.strip().removeprefix("card=").isdigit(), done.stdout
+    # The night file's path and nothing else: a command line is world-readable.
+    assert args.read_text().splitlines() == [
+        "-m", "host.qr_window", "--card", "--night-file", "/x/night.json",
+    ]
+
+
+def test_no_qr_card_without_a_relay_session(tmp_path):
+    # No session: no relay is configured, or it could not be reached.
+    done, args, _ = run_start_qr_card(tmp_path, "")
+    assert done.returncode == 0, done.stderr
+    assert done.stdout == "card=\n"
+    assert not args.exists()
+
+
+def test_cleanup_stops_the_qr_card(tmp_path):
+    # The card is on the TV, so it goes the moment the game does.
+    state = tmp_path / "run-state"
+    state.mkdir(mode=0o700)
+    script = (
+        "set -euo pipefail\n"
+        "umask 077\n"
+        f'STATE="{state}"\n'
+        # Forked before the block sets its TERM trap: a child forked after it
+        # swallows a TERM that lands before its exec, and cleanup comes at once.
+        "sleep 30 & stand_in=$!\n"
+        + cleanup_block()
+        # CARD is set after the block, which starts it off empty.
+        + "\nCARD=$stand_in\n"
+        "cleanup\n"
+        # The kill is a signal: give it a moment to land.
+        'for _ in $(seq 1 20); do kill -0 "$CARD" 2>/dev/null || break; sleep 0.1; done\n'
+        'if kill -0 "$CARD" 2>/dev/null; then kill -9 "$CARD"; echo running; '
+        "else echo stopped; fi\n"
+    )
+    done = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True,
+        env={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "stopped"
+
+
+def test_cleanup_stops_the_qr_card_before_the_slow_clear():
+    # The clear can take seconds (python3 starting up, then an HTTPS round
+    # trip), and the TV should not keep showing the card meanwhile.
+    text = LAUNCHER.read_text()
+    cleanup = text[text.index("cleanup() {"):text.index("trap cleanup")]
+    assert cleanup.index('kill "$CARD"') < cleanup.index("host.session --clear")
 
 
 @pytest.mark.parametrize("variable", ["JBVIP_RELAY_URL"])
