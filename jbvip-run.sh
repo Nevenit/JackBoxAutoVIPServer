@@ -148,9 +148,10 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# The CA bundle and port checks come before the relay session below, like the
-# redirect check above: a night that can't capture a room code never touches the
-# relay.
+# Every check that can run before the relay session below does, the redirect
+# check above included: with no redirect, no CA bundle, no working bubblewrap or
+# a busy port, a launch never touches the relay. Only mitmdump has to wait, as it
+# needs the session's credentials.
 
 # The CA file the game's statically-linked libcurl reads (it ignores SSL_CERT_FILE).
 SYS_CA=""

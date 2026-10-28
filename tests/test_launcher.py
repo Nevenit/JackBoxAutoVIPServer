@@ -344,9 +344,9 @@ def bwrap_line() -> str:
     return line.removeprefix("exec ")
 
 
-# Before pairing, the launcher makes the game's mount with a stand-in for the
-# bundle, which does not exist yet: bwrap failing at the game launch itself
-# would end the launch with no game.
+# Before the session setup step, the launcher makes the game's mount with a
+# stand-in for the bundle, which does not exist yet: bwrap failing at the game
+# launch itself would end the launch with no game.
 BWRAP_PREFLIGHT = 'bwrap --dev-bind / / --bind "$SYS_CA" "$CA_TARGET" -- true'
 
 
@@ -357,7 +357,7 @@ def bwrap_preflight_line() -> str:
          if one.startswith(BWRAP_PREFLIGHT)),
         None,
     )
-    assert line, "jbvip-run.sh no longer checks that bwrap can start before pairing"
+    assert line, "jbvip-run.sh no longer checks that bwrap can start before session setup"
     return line
 
 
@@ -672,8 +672,9 @@ def test_the_fallback_returns_the_games_exit_status_and_still_cleans_up(tmp_path
 def test_inherited_session_variables_neither_reach_the_game_nor_break_cleanup(
     tmp_path, inherited
 ):
-    # A run_plain before pairing fires the trap, which reads both. An exported
-    # SESSION_TOKEN would also carry tonight's publisher token into the game.
+    # A run_plain before the session setup step fires the trap, which reads
+    # both. An exported SESSION_TOKEN would also carry tonight's publisher
+    # token into the game.
     state = tmp_path / "run-state"
     state.mkdir(mode=0o700)
     done, _, _ = run_fallback(
@@ -690,13 +691,13 @@ def test_inherited_session_variables_neither_reach_the_game_nor_break_cleanup(
     assert not state.exists()
 
 
-def test_interception_checks_run_before_the_pairing_window():
-    # Asking someone to scan a QR code is pointless on a night that cannot
-    # capture a room code.
+def test_interception_checks_run_before_the_session_setup_step():
+    # A night that cannot capture a room code must not reach the relay: the
+    # session setup step resumes or creates a session there.
     text = LAUNCHER.read_text()
-    pairing = text.index("host.qr_window")
+    setup = text.index("host.qr_window")
     for check in (REDIRECT_CHECK, "CA_TARGET=", BWRAP_PREFLIGHT, "if port_up; then"):
-        assert text.index(check) < pairing
+        assert text.index(check) < setup
 
 
 def test_the_qr_window_is_handed_tonights_night_file():
