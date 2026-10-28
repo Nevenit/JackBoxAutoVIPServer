@@ -46,6 +46,9 @@ PUBLISH_LIMIT_PER_MINUTE = 60
 # also per session: a phone tapping Hide must never be able to use up the
 # publish budget, or room codes would stop reaching anyone.
 QR_LIMIT_PER_MINUTE = 30
+# Checking an admin key is open to every subscriber, so guessing is capped per
+# session; a stranger's guesses must not spend another night's budget.
+ADMIN_GUESS_LIMIT_PER_MINUTE = 10
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -68,13 +71,16 @@ def _bearer(request) -> str:
 
 class Relay:
     def __init__(self, state: RelayState, *, create_limiter=None,
-                 publish_limiter_factory=None, qr_limiter_factory=None):
+                 publish_limiter_factory=None, qr_limiter_factory=None,
+                 admin_guess_limiter_factory=None):
         self.state = state
         # A dict, not a set, for its insertion order: the first key is the
-        # session's oldest stream. Values are unused.
-        self._queues: dict[str, dict[asyncio.Queue, None]] = {}
+        # session's oldest stream. Values are the stream's role: "admin" or
+        # "guest".
+        self._queues: dict[str, dict[asyncio.Queue, str]] = {}
         self._publish_limiters: dict[str, RateLimiter] = {}
         self._qr_limiters: dict[str, RateLimiter] = {}
+        self._admin_guess_limiters: dict[str, RateLimiter] = {}
         self._create_limiter = create_limiter or RateLimiter(
             limit=CREATE_LIMIT_PER_MINUTE, window_seconds=60.0
         )
@@ -83,6 +89,11 @@ class Relay:
         )
         self._new_qr_limiter = qr_limiter_factory or (
             lambda: RateLimiter(limit=QR_LIMIT_PER_MINUTE, window_seconds=60.0)
+        )
+        self._new_admin_guess_limiter = admin_guess_limiter_factory or (
+            lambda: RateLimiter(
+                limit=ADMIN_GUESS_LIMIT_PER_MINUTE, window_seconds=60.0
+            )
         )
 
     # --- bookkeeping ---
@@ -109,6 +120,7 @@ class Relay:
         """
         self._publish_limiters.pop(session_id, None)
         self._qr_limiters.pop(session_id, None)
+        self._admin_guess_limiters.pop(session_id, None)
         for queue in self._queues.pop(session_id, ()):
             self._close_queue(queue)
 
@@ -321,11 +333,49 @@ class Relay:
         """Only the host brings the QR card back."""
         return self._set_qr_hidden(request, False, either=False)
 
+    async def register_admin(self, request):
+        """The host PC registers tonight's admin key (a hash, never the password)."""
+        session_id = request.path_params["session_id"]
+        refusal = self._refuse(request, session_id)
+        if refusal is not None:
+            return refusal
+        throttled = self._over_budget(session_id)
+        if throttled is not None:
+            return throttled
+        try:
+            body = await request.json()
+            key, head_start = body["key"], body["head_start"]
+            self.state.register_admin(session_id, key, head_start)
+        except (ValueError, TypeError, KeyError) as exc:
+            if isinstance(exc, KeyError) and exc.args == (session_id,):
+                # The session expired inside the await above.
+                return JSONResponse({"error": "no such session"}, status_code=404)
+            return JSONResponse({"error": "bad request"}, status_code=400)
+        return Response(status_code=204)
+
+    def _admin_status(self, request, session_id) -> str:
+        """What the request's X-Jbvip-Admin key makes this stream.
+
+        Run after the subscriber-token check. Any key sent to a session with a
+        registration spends the guess budget; once it is spent no key is
+        checked at all, so the real one is refused too until the minute rolls.
+        """
+        key = request.headers.get("x-jbvip-admin") or None
+        session = self.state.session(session_id)
+        if key is not None and session is not None and session.admin_key is not None:
+            limiter = self._admin_guess_limiters.setdefault(
+                session_id, self._new_admin_guess_limiter()
+            )
+            if not limiter.allow():
+                return "limited"
+        return self.state.admin_status(session_id, key)
+
     async def subscribe(self, request):
         session_id = request.path_params["session_id"]
         refusal = self._refuse(request, session_id, subscriber=True)
         if refusal is not None:
             return refusal
+        status = self._admin_status(request, session_id)
         queues = self._queues.setdefault(session_id, {})
         if len(queues) >= MAX_SUBSCRIBERS_PER_SESSION:
             # A phone that sleeps or changes network leaves a stream that stays
@@ -339,7 +389,7 @@ class Relay:
         # NO `await` from here to the return. A code published in that window
         # would be lost: too late for the seed, too early for the fan-out.
         queue: asyncio.Queue = asyncio.Queue(maxsize=SUBSCRIBER_QUEUE_SIZE)
-        queues[queue] = None
+        queues[queue] = "admin" if status == "admin" else "guest"
         self.state.touch(session_id)
         # "No room" is news too: a phone that slept or reconnected through a
         # clear still has the closed room in its frame. The QR flag rides on
@@ -381,7 +431,11 @@ class Relay:
         return StreamingResponse(
             stream(),
             media_type="text/event-stream",
-            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+            headers={
+                "Cache-Control": "no-store",
+                "X-Accel-Buffering": "no",
+                "X-Jbvip-Admin": status,
+            },
         )
 
 
@@ -397,12 +451,14 @@ async def player_page(request):
 
 
 def build_app(state: RelayState, *, create_limiter=None,
-              publish_limiter_factory=None, qr_limiter_factory=None) -> Starlette:
+              publish_limiter_factory=None, qr_limiter_factory=None,
+              admin_guess_limiter_factory=None) -> Starlette:
     relay = Relay(
         state,
         create_limiter=create_limiter,
         publish_limiter_factory=publish_limiter_factory,
         qr_limiter_factory=qr_limiter_factory,
+        admin_guess_limiter_factory=admin_guess_limiter_factory,
     )
     app = Starlette(
         routes=[
@@ -421,6 +477,8 @@ def build_app(state: RelayState, *, create_limiter=None,
                   methods=["POST"]),
             Route("/sessions/{session_id}/qr/show", relay.show_qr,
                   methods=["POST"]),
+            Route("/sessions/{session_id}/admin", relay.register_admin,
+                  methods=["PUT"]),
             Route("/sessions/{session_id}/subscribe", relay.subscribe,
                   methods=["GET"]),
             Route("/", landing_page, methods=["GET"]),

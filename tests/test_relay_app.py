@@ -1053,3 +1053,106 @@ async def test_the_real_publisher_latches_when_the_real_session_is_deleted(caplo
             await publisher.set_code("ZZZZ")
             await publisher.set_code("YYYY")
     assert caplog.text.count(LOG_MARKER) == 1
+
+
+# --- the admin key ------------------------------------------------------
+
+ADMIN_KEY = "d2f597d1c562c90fdcb4f02255abdf38aee33a342ed215663554309fb17091c6"
+OTHER_ADMIN_KEY = "1" * 64
+
+
+def admin_url(session):
+    return f"/sessions/{session['session_id']}/admin"
+
+
+async def register(http, session, key=ADMIN_KEY, head_start=2):
+    return await http.put(
+        admin_url(session),
+        json={"key": key, "head_start": head_start},
+        headers=auth(session["publisher_token"]),
+    )
+
+
+async def admin_header(http, session, key=None, token=None):
+    headers = auth(token or session["subscriber_token"])
+    if key is not None:
+        headers["X-Jbvip-Admin"] = key
+    async with http.stream("GET", subscribe_url(session), headers=headers) as r:
+        assert r.status_code == 200
+        return r.headers["x-jbvip-admin"]
+
+
+async def test_put_admin_needs_the_publisher_token_and_a_good_body():
+    _, app = make()
+    async with serving(app) as http:
+        s = await new_session(http)
+        assert (await register(http, s)).status_code == 204
+        bad = await http.put(admin_url(s), json={"key": ADMIN_KEY, "head_start": 2},
+                             headers=auth(s["subscriber_token"]))
+        assert bad.status_code == 401
+        for body in ({"key": "nope", "head_start": 1}, {"key": ADMIN_KEY},
+                     {"key": ADMIN_KEY, "head_start": "x"}, [1]):
+            r = await http.put(admin_url(s), json=body,
+                               headers=auth(s["publisher_token"]))
+            assert r.status_code == 400
+        gone = await http.put("/sessions/nope/admin", json={},
+                              headers=auth(s["publisher_token"]))
+        assert gone.status_code == 404
+
+
+async def test_subscribe_reports_the_admin_status():
+    _, app = make()
+    async with serving(app) as http:
+        s = await new_session(http)
+        assert await admin_header(http, s) == "guest"
+        assert await admin_header(http, s, ADMIN_KEY) == "off"
+        await register(http, s)
+        assert await admin_header(http, s, ADMIN_KEY) == "admin"
+        assert await admin_header(http, s, OTHER_ADMIN_KEY) == "wrong"
+        assert await admin_header(http, s) == "guest"
+
+
+async def test_wrong_keys_spend_a_budget_then_everything_is_limited():
+    _, app = make(
+        admin_guess_limiter_factory=lambda: RateLimiter(limit=2, window_seconds=60.0)
+    )
+    async with serving(app) as http:
+        s = await new_session(http)
+        await register(http, s)
+        seen = [await admin_header(http, s, OTHER_ADMIN_KEY) for _ in range(3)]
+        assert seen == ["wrong", "wrong", "limited"]
+        assert await admin_header(http, s, ADMIN_KEY) == "limited"
+        assert await admin_header(http, s) == "guest"
+
+
+async def test_junk_subscriber_tokens_do_not_spend_the_guess_budget():
+    _, app = make(
+        admin_guess_limiter_factory=lambda: RateLimiter(limit=1, window_seconds=60.0)
+    )
+    async with serving(app) as http:
+        s = await new_session(http)
+        await register(http, s)
+        for _ in range(3):
+            r = await http.get(subscribe_url(s), headers={
+                **auth("junk"), "X-Jbvip-Admin": OTHER_ADMIN_KEY})
+            assert r.status_code == 401
+        assert await admin_header(http, s, ADMIN_KEY) == "admin"
+
+
+async def test_admin_streams_are_counted_and_capped_like_any_other():
+    _, app = make()
+    relay = app.state.relay
+    async with serving(app) as http:
+        s = await new_session(http)
+        await register(http, s)
+        async with http.stream("GET", subscribe_url(s), headers={
+                **auth(s["subscriber_token"]), "X-Jbvip-Admin": ADMIN_KEY}) as r:
+            assert r.headers["x-jbvip-admin"] == "admin"
+            assert list(relay._queues[s["session_id"]].values()) == ["admin"]
+            info = await http.get(f"/sessions/{s['session_id']}",
+                                  headers=auth(s["publisher_token"]))
+            assert info.json()["subscribers"] == 1
+            while len(relay._queues[s["session_id"]]) < MAX_SUBSCRIBERS_PER_SESSION:
+                relay._queues[s["session_id"]][asyncio.Queue()] = "guest"
+            assert await admin_header(http, s) == "guest"
+            assert len(relay._queues[s["session_id"]]) <= MAX_SUBSCRIBERS_PER_SESSION

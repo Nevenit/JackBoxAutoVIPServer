@@ -246,7 +246,8 @@ QR code.
 | DELETE | `/sessions/{id}/code`        | publisher token   | Clear the room: the host quit a pack; phones go back to waiting → 204        |
 | POST   | `/sessions/{id}/qr/hide`     | publisher or subscriber token | Hide the TV's QR card for the rest of the night: any phone, or the host → 204 |
 | POST   | `/sessions/{id}/qr/show`     | publisher token   | Bring the QR card back: the host only, a subscriber token gets 401 → 204     |
-| GET    | `/sessions/{id}/subscribe`   | subscriber token  | SSE stream of `{code, ts, qr_hidden}`; `code` is `null` when there is no room |
+| PUT    | `/sessions/{id}/admin`       | publisher token   | Register tonight's admin key `{key, head_start}` (`key` = 64 lowercase hex, a sha256 of the password; `head_start` seconds, clamped to 0 to 5) → 204; 400 for a bad body. Charged to the publish budget |
+| GET    | `/sessions/{id}/subscribe`   | subscriber token  | SSE stream of `{code, ts, qr_hidden}`; `code` is `null` when there is no room. Optional request header `X-Jbvip-Admin: <key>`; the response always carries `X-Jbvip-Admin: admin\|guest\|wrong\|off\|limited` (guest = no key sent, off = key sent but none registered, limited = the 10-per-minute key-check budget is spent) |
 | DELETE | `/sessions/{id}`             | publisher token   | End the session immediately → 204                                            |
 | GET    | `/`                          | none              | A one-line landing page                                                      |
 | GET    | `/j`                         | none              | The player page (`relay/static/player.html`)                                 |

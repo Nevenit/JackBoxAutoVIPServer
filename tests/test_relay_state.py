@@ -502,3 +502,51 @@ def test_the_rate_limiter_defaults_to_the_monotonic_clock():
     # Never the wall clock: an NTP step backwards would widen the window.
     limiter = RateLimiter(limit=1, window_seconds=60.0)
     assert limiter._now is time.monotonic
+
+
+# --- the admin key ------------------------------------------------------
+
+KEY = "d2f597d1c562c90fdcb4f02255abdf38aee33a342ed215663554309fb17091c6"
+OTHER_KEY = "0" * 64
+
+
+def test_admin_status_is_admin_wrong_off_or_guest():
+    state = make()
+    s = state.create_session()
+    assert state.admin_status(s.session_id, KEY) == "off"
+    assert state.admin_status(s.session_id, None) == "guest"
+    state.register_admin(s.session_id, KEY, 1.0)
+    assert state.admin_status(s.session_id, KEY) == "admin"
+    assert state.admin_status(s.session_id, OTHER_KEY) == "wrong"
+    assert state.admin_status(s.session_id, None) == "guest"
+
+
+def test_register_admin_clamps_head_start_and_replaces():
+    state = make()
+    s = state.create_session()
+    state.register_admin(s.session_id, KEY, -1)
+    assert s.head_start == 0
+    state.register_admin(s.session_id, OTHER_KEY, 9)
+    assert s.head_start == 5
+    assert state.admin_status(s.session_id, KEY) == "wrong"
+
+
+@pytest.mark.parametrize("key", ["abc", "A" * 64, "g" * 64, None, 5])
+def test_register_admin_rejects_a_bad_key(key):
+    state = make()
+    s = state.create_session()
+    with pytest.raises(ValueError):
+        state.register_admin(s.session_id, key, 1.0)
+
+
+@pytest.mark.parametrize("head", [math.nan, math.inf, "x", None])
+def test_register_admin_rejects_a_bad_head_start(head):
+    state = make()
+    s = state.create_session()
+    with pytest.raises(ValueError):
+        state.register_admin(s.session_id, KEY, head)
+
+
+def test_register_admin_unknown_session_is_a_key_error():
+    with pytest.raises(KeyError):
+        make().register_admin("nope", KEY, 1.0)

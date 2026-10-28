@@ -9,6 +9,7 @@ on purpose: the relay deploys to a VPS on its own and must not import the
 extractor package.
 """
 import math
+import re
 import secrets
 import time
 from dataclasses import dataclass
@@ -34,6 +35,9 @@ MAX_SUBSCRIBERS_PER_SESSION = 16
 # and it is never a credential on its own.
 SESSION_ID_BYTES = 9
 TOKEN_BYTES = 32
+# sha256 hex of the admin password; the relay never sees the password itself.
+_ADMIN_KEY = re.compile(r"[0-9a-f]{64}")
+MAX_HEAD_START_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -75,6 +79,8 @@ class Session:
     roomless_since: float | None
     record: CodeRecord | None = None
     qr_hidden: bool = False
+    admin_key: str | None = None
+    head_start: float = 0.0
 
 
 class SessionCapacityError(RuntimeError):
@@ -276,6 +282,35 @@ class RelayState:
         changed = session.qr_hidden != hidden
         session.qr_hidden = hidden
         return changed
+
+    # --- the admin key ---
+    def register_admin(self, session_id, key, head_start) -> None:
+        """Set tonight's admin key and head start, replacing any earlier one.
+
+        Raises KeyError for an unknown session, like publish, and ValueError
+        for a key that is not 64 lowercase hex or a head start that is not a
+        finite number. The head start is clamped to [0, MAX_HEAD_START_SECONDS].
+        """
+        session = self.session(session_id)
+        if session is None:
+            raise KeyError(session_id)
+        if not isinstance(key, str) or not _ADMIN_KEY.fullmatch(key):
+            raise ValueError("admin key must be 64 lowercase hex characters")
+        if isinstance(head_start, bool) or not isinstance(head_start, (int, float)):
+            raise ValueError("head_start must be a number")
+        if not math.isfinite(head_start):
+            raise ValueError("head_start must be finite")
+        session.admin_key = key
+        session.head_start = min(max(float(head_start), 0.0), MAX_HEAD_START_SECONDS)
+
+    def admin_status(self, session_id, key) -> str:
+        """guest (no key sent), off (no registration), admin or wrong."""
+        if key is None:
+            return "guest"
+        session = self.session(session_id)
+        if session is None or session.admin_key is None:
+            return "off"
+        return "admin" if _token_matches(key, session.admin_key) else "wrong"
 
     # --- activity ---
     def touch(self, session_id) -> None:
