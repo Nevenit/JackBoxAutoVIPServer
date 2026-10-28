@@ -128,7 +128,9 @@ def arrange_card(monkeypatch, *, night=CREDENTIALS, status=STATUS, wanted=True,
                  window_error=None):
     """Replace card mode's collaborators. An exception given as `status` is
     raised by session_status, one given as `window_error` by show_card."""
-    did = SimpleNamespace(loaded=[], statuses=[], asked=[], cards=[], setup=[])
+    did = SimpleNamespace(
+        loaded=[], statuses=[], asked=[], cards=[], launchers=[], setup=[]
+    )
 
     def load_night(path):
         did.loaded.append(path)
@@ -144,8 +146,9 @@ def arrange_card(monkeypatch, *, night=CREDENTIALS, status=STATUS, wanted=True,
         did.asked.append((credentials, found))
         return wanted
 
-    def show_card(credentials):
+    def show_card(credentials, *, launcher=None):
         did.cards.append(credentials)
+        did.launchers.append(launcher)
         if window_error is not None:
             raise window_error
 
@@ -204,6 +207,31 @@ def test_card_mode_survives_a_broken_display(monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "no display" in err
     assert "Traceback" not in err
+
+
+def test_card_mode_reads_the_launchers_pid_before_asking_the_relay(monkeypatch):
+    # The status call can take seconds. A launcher killed without its cleanup in
+    # that window goes unnoticed if its pid is only read afterwards: the card is
+    # then adopted by init and compares against init's pid.
+    did = arrange_card(monkeypatch)
+    order = []
+    pids = iter(range(4000, 4010))  # a new answer on every call
+
+    def getppid():
+        order.append(("getppid", pid := next(pids)))
+        return pid
+
+    asked_the_relay = qr_window.session_status
+
+    def session_status(credentials):
+        order.append(("status", None))
+        return asked_the_relay(credentials)
+
+    monkeypatch.setattr(qr_window, "os", SimpleNamespace(getppid=getppid))
+    monkeypatch.setattr(qr_window, "session_status", session_status)
+    assert qr_window.main(CARD_ARGV) == 0
+    assert order == [("getppid", 4000), ("status", None)]
+    assert did.launchers == [4000]
 
 
 # --- where the card goes and how big it is ------------------------------------

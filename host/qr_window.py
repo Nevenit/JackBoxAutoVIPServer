@@ -126,23 +126,24 @@ def _active_monitors() -> str:
         return ""
 
 
-def show_card(credentials, *, keeps_showing=None, hide=None) -> None:
+def show_card(credentials, *, keeps_showing=None, hide=None, launcher=None) -> None:
     """Put the QR card on the TV and keep it there until it should go.
 
     It goes when `keeps_showing()` says no (a phone hid the QR, or the night is
-    gone), when the launcher is gone, or when × is clicked, which first tells
-    the relay to hide the QR for the night. Raises only when Tk itself fails;
-    that is the caller's problem to log.
+    gone), when the launcher is gone, or when × is clicked, which tells the
+    relay to hide the QR for the night. Raises only when Tk itself fails; that
+    is the caller's problem to log.
+
+    `launcher` is the pid of the process that started the card; run_card reads
+    it before its first request, which can take seconds. None means now.
 
     Nothing here takes the keyboard: no focus_force, and × is a Label, not a
     Button, so there is nothing on the card to tab to.
     """
     keeps_showing = keeps_showing or (lambda: card_should_stay(credentials))
     hide = hide or hide_qr
-    # shortcut: taken after run_card's status call (up to 5 s), so a launcher
-    # that died during it goes unnoticed; pass the pid in from run_card if that
-    # is ever seen.
-    launcher = os.getppid()
+    if launcher is None:
+        launcher = os.getppid()
 
     root = tk.Tk()
     root.overrideredirect(True)
@@ -216,12 +217,15 @@ def show_card(credentials, *, keeps_showing=None, hide=None) -> None:
 def run_card(night_file) -> int:
     """Card mode. Always 0: the game does not wait for this, and a relay or
     display problem costs only the card."""
+    # First: the status call below can take seconds, and a launcher that is
+    # killed without its cleanup meanwhile must still be seen to be gone.
+    launcher = os.getppid()
     credentials = load_night(night_file)
     if credentials is None:
         return 0
     try:
         if card_wanted(credentials, session_status(credentials)):
-            show_card(credentials)
+            show_card(credentials, launcher=launcher)
     except Exception as exc:
         # tk.TclError (no display) and an unreachable relay are the expected
         # cases; neither should reach the user as a traceback.
