@@ -81,6 +81,10 @@ class Relay:
         self._publish_limiters: dict[str, RateLimiter] = {}
         self._qr_limiters: dict[str, RateLimiter] = {}
         self._admin_guess_limiters: dict[str, RateLimiter] = {}
+        # A head start in progress: the room guests are still on, and the timer
+        # that hands them the current one.
+        self._guest_room: dict[str, tuple] = {}
+        self._guest_timer: dict[str, asyncio.TimerHandle] = {}
         self._create_limiter = create_limiter or RateLimiter(
             limit=CREATE_LIMIT_PER_MINUTE, window_seconds=60.0
         )
@@ -121,11 +125,34 @@ class Relay:
         self._publish_limiters.pop(session_id, None)
         self._qr_limiters.pop(session_id, None)
         self._admin_guess_limiters.pop(session_id, None)
+        self._end_window(session_id)
         for queue in self._queues.pop(session_id, ()):
             self._close_queue(queue)
 
-    def _fan_out(self, session_id: str, payload: dict) -> None:
-        for queue in list(self._queues.get(session_id, ())):
+    def _end_window(self, session_id: str) -> None:
+        """Forget a pending head start without delivering anything."""
+        self._guest_room.pop(session_id, None)
+        timer = self._guest_timer.pop(session_id, None)
+        if timer is not None:
+            timer.cancel()
+
+    def _tell_room(self, session_id: str, *roles: str) -> None:
+        """Send each role its own view of the room (see _room_event)."""
+        for role in roles:
+            self._fan_out(session_id,
+                          self._room_event(session_id, admin=role == "admin"), role)
+
+    def _guests_catch_up(self, session_id: str) -> None:
+        """The head start is over: guests get the current room."""
+        self._guest_timer.pop(session_id, None)
+        if self._guest_room.pop(session_id, None) is not None:
+            self._tell_room(session_id, "guest")
+
+    def _fan_out(self, session_id: str, payload: dict, role=None) -> None:
+        """Queue the payload on every stream, or only those with this role."""
+        for queue, queue_role in list(self._queues.get(session_id, {}).items()):
+            if role is not None and queue_role != role:
+                continue
             try:
                 queue.put_nowait(payload)
             except asyncio.QueueFull:
@@ -153,8 +180,13 @@ class Relay:
         """
         return {"code": code, "ts": ts, "qr_hidden": self._qr_hidden(session_id)}
 
-    def _room_event(self, session_id) -> dict:
-        """The session's current room as an event; `code` is None with no room."""
+    def _room_event(self, session_id, *, admin: bool) -> dict:
+        """The room this stream should see as an event; `code` is None with none.
+
+        A guest inside a head start still sees the room it was on.
+        """
+        if not admin and session_id in self._guest_room:
+            return self._event(session_id, *self._guest_room[session_id])
         current = self.state.current_code(session_id)
         if current is None:
             return self._event(session_id, None, time.time())
@@ -253,6 +285,23 @@ class Relay:
         self._release(session_id)
         return Response(status_code=204)
 
+    def _publish_news(self, session_id, previous) -> None:
+        """Tell the streams about a changed room, admins first if a head start applies."""
+        session = self.state.session(session_id)
+        admins = "admin" in self._queues.get(session_id, {}).values()
+        if (session_id not in self._guest_room and admins and session
+                and session.admin_key is not None and session.head_start > 0):
+            # (None, now) when guests were on no room: they get a null event.
+            self._guest_room[session_id] = (
+                (previous.code, previous.ts) if previous else (None, time.time())
+            )
+            self._guest_timer[session_id] = asyncio.get_running_loop().call_later(
+                session.head_start, self._guests_catch_up, session_id
+            )
+        # An open window keeps its timer: a later room replaces the pending one.
+        self._tell_room(session_id, "admin",
+                        *(() if session_id in self._guest_room else ("guest",)))
+
     async def publish(self, request):
         session_id = request.path_params["session_id"]
         refusal = self._refuse(request, session_id)
@@ -268,6 +317,7 @@ class Relay:
             ts = float(raw_ts) if raw_ts is not None else time.time()
         except (ValueError, TypeError, KeyError):
             return JSONResponse({"error": "bad request"}, status_code=400)
+        previous = self.state.current_code(session_id)
         try:
             changed = self.state.publish(session_id, code, ts)
         except ValueError:
@@ -278,7 +328,7 @@ class Relay:
             # host would get a 500 for something it did nothing wrong.
             return JSONResponse({"error": "no such session"}, status_code=404)
         if changed:
-            self._fan_out(session_id, self._event(session_id, code, ts))
+            self._publish_news(session_id, previous)
         self._reap()
         return Response(status_code=204)
 
@@ -297,8 +347,9 @@ class Relay:
             # Expiry follows the clock, not the event loop, so the session can
             # pass its deadline between _refuse's check and this call.
             return JSONResponse({"error": "no such session"}, status_code=404)
+        self._end_window(session_id)
         if cleared:
-            self._fan_out(session_id, self._event(session_id, None, time.time()))
+            self._tell_room(session_id, "admin", "guest")
         # 204 whether or not there was a code to remove: the launcher clears on
         # every exit and has no use for the difference.
         return Response(status_code=204)
@@ -321,7 +372,7 @@ class Relay:
         if changed:
             # The current room, unchanged: this is news about the QR only, and
             # the page must not mistake it for a new or closed room.
-            self._fan_out(session_id, self._room_event(session_id))
+            self._tell_room(session_id, "admin", "guest")
         # 204 whether or not the flag changed: both calls are idempotent.
         return Response(status_code=204)
 
@@ -394,12 +445,13 @@ class Relay:
         # NO `await` from here to the return. A code published in that window
         # would be lost: too late for the seed, too early for the fan-out.
         queue: asyncio.Queue = asyncio.Queue(maxsize=SUBSCRIBER_QUEUE_SIZE)
-        queues[queue] = "admin" if status == "admin" else "guest"
+        role = "admin" if status == "admin" else "guest"
+        queues[queue] = role
         self.state.touch(session_id)
         # "No room" is news too: a phone that slept or reconnected through a
         # clear still has the closed room in its frame. The QR flag rides on
         # the same event, so a phone learns it on connecting too.
-        queue.put_nowait(self._room_event(session_id))
+        queue.put_nowait(self._room_event(session_id, admin=role == "admin"))
 
         async def stream():
             try:

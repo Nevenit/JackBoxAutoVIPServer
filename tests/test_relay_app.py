@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import json
 import re
 import time
 from pathlib import Path
@@ -1169,3 +1170,182 @@ async def test_the_right_key_never_spends_the_guess_budget():
         assert [await admin_header(http, s, OTHER_ADMIN_KEY) for _ in range(2)] == ["wrong"] * 2
         assert await admin_header(http, s, OTHER_ADMIN_KEY) == "limited"
         assert await admin_header(http, s, ADMIN_KEY) == "limited"
+
+
+# --- the head start -----------------------------------------------------
+
+HEAD_START = 0.3
+
+
+class Feed:
+    """Events off one SSE response, readable one `feed_event` at a time."""
+
+    def __init__(self, response):
+        self.events = asyncio.Queue()
+        self.task = asyncio.create_task(self._pump(response))
+
+    async def _pump(self, response):
+        with contextlib.suppress(Exception):  # the stream closing at teardown
+            async for line in response.aiter_lines():
+                if line.startswith("data: "):
+                    self.events.put_nowait(json.loads(line[len("data: "):]))
+
+
+async def feed_event(feed, timeout=3.0):
+    return await asyncio.wait_for(feed.events.get(), timeout)
+
+
+async def feed_events(feed, count, timeout=3.0):
+    return [await feed_event(feed, timeout) for _ in range(count)]
+
+
+@contextlib.asynccontextmanager
+async def night(http, *, admin=True, head_start=HEAD_START):
+    """A registered session with an open admin stream (unless admin=False)."""
+    s = await new_session(http)
+    await register(http, s, head_start=head_start)
+    async with contextlib.AsyncExitStack() as stack:
+        if admin:
+            r = await stack.enter_async_context(http.stream(
+                "GET", subscribe_url(s),
+                headers={**auth(s["subscriber_token"]), "X-Jbvip-Admin": ADMIN_KEY}))
+            feed = s["admin"] = Feed(r)
+            assert (await feed_event(feed))["code"] is None
+        yield s
+
+
+@contextlib.asynccontextmanager
+async def guest_stream(http, s):
+    async with http.stream("GET", subscribe_url(s),
+                           headers=auth(s["subscriber_token"])) as r:
+        yield Feed(r)
+
+
+async def put_room(http, s, code, ts=1.0):
+    r = await http.post(publish_url(s), json={"code": code, "ts": ts},
+                        headers=auth(s["publisher_token"]))
+    assert r.status_code == 204
+
+
+async def timed(coro):
+    start = time.monotonic()
+    event = await coro
+    return event, time.monotonic() - start
+
+
+async def test_admin_gets_a_new_room_at_once_and_the_guest_after_the_head_start():
+    _, app = make()
+    async with serving(app) as http, night(http) as s:
+        async with guest_stream(http, s) as g:
+            assert (await feed_event(g))["code"] is None
+            await put_room(http, s, "ABCD")
+            assert (await feed_event(s["admin"], 0.1))["code"] == "ABCD"
+            with pytest.raises(asyncio.TimeoutError):
+                await feed_event(g, 0.1)
+            event, took = await timed(feed_event(g, 1.0))
+            assert event["code"] == "ABCD"
+            assert took < 0.7
+
+
+async def test_without_an_admin_connected_the_guest_gets_it_at_once():
+    _, app = make()
+    async with serving(app) as http, night(http, admin=False) as s:
+        async with guest_stream(http, s) as g:
+            await feed_event(g)
+            await put_room(http, s, "ABCD")
+            assert (await feed_event(g, 0.1))["code"] == "ABCD"
+
+
+async def test_a_head_start_of_zero_means_no_window():
+    _, app = make()
+    async with serving(app) as http, night(http, head_start=0) as s:
+        async with guest_stream(http, s) as g:
+            await feed_event(g)
+            await put_room(http, s, "ABCD")
+            assert (await feed_event(g, 0.1))["code"] == "ABCD"
+
+
+async def test_a_guest_who_joins_in_the_window_is_seeded_with_the_old_room():
+    _, app = make()
+    async with serving(app) as http, night(http) as s:
+        await put_room(http, s, "OLDD", ts=1.0)
+        await feed_event(s["admin"])
+        await asyncio.sleep(HEAD_START + 0.2)
+        await put_room(http, s, "NEWW", ts=2.0)
+        async with guest_stream(http, s) as g:
+            seed, later = await feed_events(g, 2)
+            assert (seed["code"], seed["ts"]) == ("OLDD", 1.0)
+            assert later["code"] == "NEWW"
+
+
+async def test_a_guest_joining_in_the_first_window_sees_null_then_the_room():
+    _, app = make()
+    async with serving(app) as http, night(http) as s:
+        await put_room(http, s, "NEWW")
+        async with guest_stream(http, s) as g:
+            seed, later = await feed_events(g, 2)
+            assert seed["code"] is None
+            assert later["code"] == "NEWW"
+
+
+async def test_a_qr_hide_in_the_window_repeats_the_old_room_to_guests():
+    _, app = make()
+    async with serving(app) as http, night(http) as s:
+        await put_room(http, s, "OLDD")
+        await feed_event(s["admin"])
+        await asyncio.sleep(HEAD_START + 0.2)
+        async with guest_stream(http, s) as g:
+            await feed_event(g)  # seed
+            await put_room(http, s, "NEWW")
+            await feed_event(s["admin"], 0.1)
+            r = await http.post(qr_url(s, "hide"), headers=auth(s["subscriber_token"]))
+            assert r.status_code == 204
+            admin_qr = await feed_event(s["admin"], 0.1)
+            assert (admin_qr["code"], admin_qr["qr_hidden"]) == ("NEWW", True)
+            guest_qr = await feed_event(g, 0.1)
+            assert (guest_qr["code"], guest_qr["qr_hidden"]) == ("OLDD", True)
+
+
+async def test_two_publishes_in_one_window_give_the_guest_one_event():
+    _, app = make()
+    async with serving(app) as http, night(http) as s:
+        async with guest_stream(http, s) as g:
+            await feed_event(g)
+            await put_room(http, s, "ONEE")
+            await put_room(http, s, "TWOO")
+            event, took = await timed(feed_event(g, 1.0))
+            assert event["code"] == "TWOO"
+            assert took < 0.7  # the timer was not restarted by the second publish
+            with pytest.raises(asyncio.TimeoutError):
+                await feed_event(g, 0.5)
+
+
+async def test_a_clear_in_the_window_reaches_both_at_once_and_no_room_follows():
+    _, app = make()
+    async with serving(app) as http, night(http) as s:
+        await put_room(http, s, "OLDD")
+        await feed_event(s["admin"])
+        await asyncio.sleep(HEAD_START + 0.2)
+        async with guest_stream(http, s) as g:
+            await feed_event(g)
+            await put_room(http, s, "NEWW")
+            await feed_event(s["admin"], 0.1)
+            r = await http.delete(code_url(s), headers=auth(s["publisher_token"]))
+            assert r.status_code == 204
+            assert (await feed_event(s["admin"], 0.1))["code"] is None
+            assert (await feed_event(g, 0.1))["code"] is None
+            with pytest.raises(asyncio.TimeoutError):
+                await feed_event(g, HEAD_START + 0.3)
+
+
+async def test_deleting_the_session_in_the_window_cancels_the_timer():
+    state, app = make()
+    async with serving(app) as http, night(http) as s:
+        relay = app.state.relay
+        await put_room(http, s, "ABCD")
+        assert s["session_id"] in relay._guest_timer
+        r = await http.delete(f"/sessions/{s['session_id']}",
+                              headers=auth(s["publisher_token"]))
+        assert r.status_code == 204
+        assert s["session_id"] not in relay._guest_timer
+        assert s["session_id"] not in relay._guest_room

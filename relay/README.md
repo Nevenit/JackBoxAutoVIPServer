@@ -281,6 +281,15 @@ Every event also carries `qr_hidden`, and a hide or show repeats the current
 room (the same `code` and `ts`, or `null` when there is none) so the page sees
 an unchanged room and leaves its game alone.
 
+When the host has registered an admin key with a head start above zero and an
+admin stream is connected, a publish that changes the room reaches the admin
+streams at once and the guests only that many seconds later (at most 5), so the
+admin taps Play first and becomes the Jackbox VIP. Until then every event a
+guest gets, the subscribe seed and QR-flag repeats included, carries the room
+that guest is still on. A second room inside the window replaces the pending
+one without restarting the timer. A clear reaches everyone at once and ends the
+window; so does the session ending. With no admin connected nothing is held.
+
 Serving a code at any age is safe because a code is only current while its pack
 is running: the launcher clears it when the pack exits, with
 `DELETE /sessions/{id}/code`. The relay used to refuse a code older than 120

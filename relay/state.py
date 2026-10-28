@@ -37,7 +37,7 @@ SESSION_ID_BYTES = 9
 TOKEN_BYTES = 32
 # sha256 hex of the admin password; the relay never sees the password itself.
 _ADMIN_KEY = re.compile(r"[0-9a-f]{64}")
-MAX_HEAD_START_SECONDS = 5.0
+ADMIN_HEAD_START_MAX = 5.0
 
 
 @dataclass(frozen=True)
@@ -296,7 +296,7 @@ class RelayState:
 
         Raises KeyError for an unknown session, like publish, and ValueError
         for a key that is not 64 lowercase hex or a head start that is not a
-        finite number. The head start is clamped to [0, MAX_HEAD_START_SECONDS].
+        finite number. The head start is clamped to [0, ADMIN_HEAD_START_MAX].
         """
         session = self.session(session_id)
         if session is None:
@@ -308,7 +308,7 @@ class RelayState:
         if not math.isfinite(head_start):
             raise ValueError("head_start must be finite")
         session.admin_key = key
-        session.head_start = min(max(float(head_start), 0.0), MAX_HEAD_START_SECONDS)
+        session.head_start = min(max(float(head_start), 0.0), ADMIN_HEAD_START_MAX)
 
     def admin_status(self, session_id, key) -> str:
         """guest (no key sent), off (no registration), admin or wrong."""
