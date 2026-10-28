@@ -51,8 +51,8 @@ class CodeRecord:
 
 @dataclass
 class Session:
-    """One game night. Mutable: `last_activity`, `record` and `roomless_since`
-    change over its life.
+    """One game night. Mutable: `last_activity`, `record`, `roomless_since` and
+    `qr_hidden` change over its life.
 
     `session_id` is carried on the record so callers never have to pair it back
     up with its key in the session table.
@@ -61,6 +61,10 @@ class Session:
     the first publish, None while a code is published, then the moment of a
     clear that removed one. Only those events move it, never activity. It has
     no default so that a session can't be built without saying which it is.
+
+    `qr_hidden` is whether the TV's QR card is hidden for the rest of the
+    night. It is not activity: setting it moves neither `last_activity` nor
+    `roomless_since`.
     """
 
     session_id: str
@@ -70,6 +74,7 @@ class Session:
     last_activity: float
     roomless_since: float | None
     record: CodeRecord | None = None
+    qr_hidden: bool = False
 
 
 class SessionCapacityError(RuntimeError):
@@ -256,6 +261,21 @@ class RelayState:
         """
         session = self.session(session_id)
         return None if session is None else session.record
+
+    # --- the TV's QR card ---
+    def set_qr_hidden(self, session_id, hidden: bool) -> bool:
+        """Hide or show the QR card for the night. True when this changed it.
+
+        Hiding twice is not a change, so phones are told once. Deliberately not
+        activity: a phone tapping Hide must not push the session's deadlines
+        out. Raises KeyError for an unknown session, like publish.
+        """
+        session = self.session(session_id)
+        if session is None:
+            raise KeyError(session_id)
+        changed = session.qr_hidden != hidden
+        session.qr_hidden = hidden
+        return changed
 
     # --- activity ---
     def touch(self, session_id) -> None:

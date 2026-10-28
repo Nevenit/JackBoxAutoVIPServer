@@ -44,6 +44,19 @@ def code_url(session):
     return f"/sessions/{session['session_id']}/code"
 
 
+def qr_url(session, action):
+    return f"/sessions/{session['session_id']}/qr/{action}"
+
+
+async def qr_hidden(http, session):
+    """The QR flag as the host sees it: over GET, with the publisher token."""
+    info = await http.get(
+        f"/sessions/{session['session_id']}",
+        headers=auth(session["publisher_token"]),
+    )
+    return info.json()["qr_hidden"]
+
+
 # --- the headline requirement -------------------------------------------
 
 async def test_a_subscriber_never_receives_another_sessions_code():
@@ -70,7 +83,7 @@ async def test_a_subscriber_never_receives_another_sessions_code():
             assert published.status_code == 204
             seed, code = await next_events(to_a, 2)
             assert seed["code"] is None  # a night with no room says so on connect
-            assert code == {"code": "WEWW", "ts": 1000.0}
+            assert code == {"code": "WEWW", "ts": 1000.0, "qr_hidden": False}
             # b's next code is its own, so nothing of a's came in between.
             # (Asserting on that, rather than on silence, keeps this from sleeping.)
             await http.post(
@@ -320,7 +333,7 @@ async def test_clearing_the_room_tells_listening_phones():
             first, second = await next_events(response, 2)
             assert first["code"] == "WEWW"
             assert second["code"] is None
-            assert set(second) == {"code", "ts"}  # the shape the page reads
+            assert set(second) == {"code", "ts", "qr_hidden"}  # the shape the page reads
 
 
 async def test_a_phone_that_joins_after_a_clear_is_told_there_is_no_room():
@@ -336,7 +349,7 @@ async def test_a_phone_that_joins_after_a_clear_is_told_there_is_no_room():
         ) as response:
             first = await first_event(response)
     assert first["code"] is None
-    assert set(first) == {"code", "ts"}  # the shape the page reads
+    assert set(first) == {"code", "ts", "qr_hidden"}  # the shape the page reads
 
 
 async def test_clearing_when_there_is_no_room_tells_nobody():
@@ -361,7 +374,7 @@ async def test_clearing_when_there_is_no_room_tells_nobody():
             )
             seed, code = await next_events(response, 2)
             assert seed["code"] is None
-            assert code == {"code": "WEWW", "ts": 1000.0}
+            assert code == {"code": "WEWW", "ts": 1000.0, "qr_hidden": False}
 
 
 async def test_clearing_needs_the_publisher_token():
@@ -409,6 +422,182 @@ async def test_a_clear_that_loses_a_race_with_expiry_is_a_404_not_a_500(monkeypa
     assert response.json() == {"error": "no such session"}
 
 
+# --- the QR card --------------------------------------------------------
+
+async def test_the_host_can_read_the_qr_flag():
+    _, app = make()
+    async with serving(app) as http:
+        session = await new_session(http)
+        assert await qr_hidden(http, session) is False
+
+
+async def test_any_phone_can_hide_the_qr():
+    _, app = make()
+    async with serving(app) as http:
+        session = await new_session(http)
+        hidden = await http.post(
+            qr_url(session, "hide"), headers=auth(session["subscriber_token"])
+        )
+        assert hidden.status_code == 204
+        assert await qr_hidden(http, session) is True
+
+
+async def test_the_host_can_hide_the_qr():
+    _, app = make()
+    async with serving(app) as http:
+        session = await new_session(http)
+        hidden = await http.post(
+            qr_url(session, "hide"), headers=auth(session["publisher_token"])
+        )
+        assert hidden.status_code == 204
+        assert await qr_hidden(http, session) is True
+
+
+async def test_only_the_host_can_show_the_qr_again():
+    _, app = make()
+    async with serving(app) as http:
+        session = await new_session(http)
+        await http.post(
+            qr_url(session, "hide"), headers=auth(session["subscriber_token"])
+        )
+        refused = await http.post(
+            qr_url(session, "show"), headers=auth(session["subscriber_token"])
+        )
+        assert refused.status_code == 401
+        assert await qr_hidden(http, session) is True  # the refusal changed nothing
+        shown = await http.post(
+            qr_url(session, "show"), headers=auth(session["publisher_token"])
+        )
+        assert shown.status_code == 204
+        assert await qr_hidden(http, session) is False
+
+
+@pytest.mark.parametrize("action", ["hide", "show"])
+async def test_the_qr_routes_check_the_session_and_the_token(action):
+    _, app = make()
+    async with serving(app) as http:
+        session = await new_session(http)
+        unknown = await http.post(
+            f"/sessions/nope/qr/{action}", headers=auth("anything")
+        )
+        wrong = await http.post(
+            qr_url(session, action), headers=auth("not-the-token")
+        )
+    assert unknown.status_code == 404
+    assert wrong.status_code == 401
+
+
+@pytest.mark.parametrize("action", ["hide", "show"])
+async def test_a_qr_change_that_loses_a_race_with_expiry_is_a_404_not_a_500(
+    action, monkeypatch
+):
+    # Same race as a clear: the session can pass its deadline between the auth
+    # check and the change, and the state then raises KeyError.
+    state, app = make()
+
+    def expired_meanwhile(session_id, hidden):
+        raise KeyError(session_id)
+
+    monkeypatch.setattr(state, "set_qr_hidden", expired_meanwhile)
+    async with serving(app) as http:
+        session = await new_session(http)
+        response = await http.post(
+            qr_url(session, action), headers=auth(session["publisher_token"])
+        )
+    assert response.status_code == 404
+    assert response.json() == {"error": "no such session"}
+
+
+async def test_a_phone_that_connects_learns_the_qr_state():
+    _, app = make()
+    async with serving(app) as http:
+        session = await new_session(http)
+        await http.post(
+            qr_url(session, "hide"), headers=auth(session["subscriber_token"])
+        )
+        async with http.stream(
+            "GET", subscribe_url(session), headers=auth(session["subscriber_token"])
+        ) as response:
+            first = await first_event(response)
+    assert first["code"] is None
+    assert first["qr_hidden"] is True
+
+
+async def test_a_qr_change_reaches_phones_once_and_keeps_the_room():
+    # The page treats every event as news about the room, and leaves a game
+    # that is already framed alone only while the code is unchanged. So a QR
+    # change must say the room it already has, with the ts it already had.
+    state, app = make()
+    async with serving(app) as http:
+        session = await new_session(http)
+        state.publish(session["session_id"], "WXYZ", 1000.0)
+        async with http.stream(
+            "GET", subscribe_url(session), headers=auth(session["subscriber_token"])
+        ) as response:
+            for _ in range(2):  # the second hide changes nothing, so says nothing
+                await http.post(
+                    qr_url(session, "hide"),
+                    headers=auth(session["subscriber_token"]),
+                )
+            await http.post(
+                publish_url(session),
+                json={"code": "ABCD", "ts": 1001.0},
+                headers=auth(session["publisher_token"]),
+            )
+            seed, hidden, published = await next_events(response, 3)
+    assert seed == {"code": "WXYZ", "ts": 1000.0, "qr_hidden": False}
+    assert hidden == {"code": "WXYZ", "ts": 1000.0, "qr_hidden": True}
+    assert published["code"] == "ABCD"
+    assert published["qr_hidden"] is True
+
+
+async def test_hide_spam_cannot_use_up_the_publish_budget():
+    # Any phone may hide. If that spent the host's publish budget, a few taps
+    # would stop room codes reaching anyone.
+    _, app = make(
+        qr_limiter_factory=lambda: RateLimiter(limit=2, window_seconds=60.0),
+        publish_limiter_factory=lambda: RateLimiter(limit=2, window_seconds=60.0),
+    )
+    async with serving(app) as http:
+        session = await new_session(http)
+        hides = [
+            (
+                await http.post(
+                    qr_url(session, "hide"),
+                    headers=auth(session["subscriber_token"]),
+                )
+            ).status_code
+            for _ in range(3)
+        ]
+        published = await http.post(
+            publish_url(session),
+            json={"code": "WEWW", "ts": 1000.0},
+            headers=auth(session["publisher_token"]),
+        )
+    assert hides == [204, 204, 429]
+    assert published.status_code == 204
+
+
+async def test_the_qr_budget_is_charged_after_the_token_check():
+    # Otherwise junk credentials exhaust the budget and lock out the holder.
+    _, app = make(
+        qr_limiter_factory=lambda: RateLimiter(limit=2, window_seconds=60.0)
+    )
+    async with serving(app) as http:
+        session = await new_session(http)
+        wrong = [
+            (
+                await http.post(qr_url(session, "hide"), headers=auth("wrong"))
+            ).status_code
+            for _ in range(3)
+        ]
+        right = await http.post(
+            qr_url(session, "hide"), headers=auth(session["subscriber_token"])
+        )
+    assert wrong == [401, 401, 401]
+    assert right.status_code == 204
+
+
 # --- subscribing --------------------------------------------------------
 
 async def test_a_subscriber_receives_the_current_code_on_connect():
@@ -420,7 +609,9 @@ async def test_a_subscriber_receives_the_current_code_on_connect():
             "GET", subscribe_url(session), headers=auth(session["subscriber_token"])
         ) as response:
             assert response.status_code == 200
-            assert await first_event(response) == {"code": "WEWW", "ts": 1000.0}
+            assert await first_event(response) == {
+                "code": "WEWW", "ts": 1000.0, "qr_hidden": False
+            }
 
 
 async def test_a_subscriber_receives_a_code_published_after_connecting():
@@ -437,7 +628,7 @@ async def test_a_subscriber_receives_a_code_published_after_connecting():
             )
             seed, code = await next_events(response, 2)
             assert seed["code"] is None  # nothing published yet: no room
-            assert code == {"code": "ZZZZ", "ts": 1000.0}
+            assert code == {"code": "ZZZZ", "ts": 1000.0, "qr_hidden": False}
 
 
 async def test_a_late_subscriber_gets_the_current_code_however_old():
@@ -733,6 +924,14 @@ async def test_releasing_a_session_forgets_its_rate_limiter():
     relay._publish_limiters[session.session_id] = RateLimiter(1, 60.0)
     relay._release(session.session_id)
     assert session.session_id not in relay._publish_limiters
+
+
+async def test_releasing_a_session_forgets_its_qr_limiter():
+    relay = Relay(RelayState(now=Clock()))
+    session = relay.state.create_session()
+    relay._qr_limiters[session.session_id] = RateLimiter(1, 60.0)
+    relay._release(session.session_id)
+    assert session.session_id not in relay._qr_limiters
 
 
 # --- the pages and logging ----------------------------------------------

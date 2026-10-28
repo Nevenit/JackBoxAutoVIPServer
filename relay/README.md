@@ -241,10 +241,12 @@ QR code.
 | Method | Path                         | Auth              | Purpose                                                                     |
 |--------|------------------------------|-------------------|------------------------------------------------------------------------------|
 | POST   | `/sessions`                  | none              | Create a session → 201 `{session_id, publisher_token, subscriber_token, expires_at}` |
-| GET    | `/sessions/{id}`             | publisher token   | `{subscribers, expires_at}`: the launcher checks tonight's session is alive, and polls it while the QR window waits for a phone |
+| GET    | `/sessions/{id}`             | publisher token   | `{subscribers, expires_at, qr_hidden}`: the launcher checks tonight's session is alive, and the QR card polls it to learn when to close |
 | POST   | `/sessions/{id}/publish`     | publisher token   | Push `{code, ts?}` → 204                                                     |
 | DELETE | `/sessions/{id}/code`        | publisher token   | Clear the room: the host quit a pack; phones go back to waiting → 204        |
-| GET    | `/sessions/{id}/subscribe`   | subscriber token  | SSE stream of `{code, ts}`; `code` is `null` when there is no room           |
+| POST   | `/sessions/{id}/qr/hide`     | publisher or subscriber token | Hide the TV's QR card for the rest of the night: any phone, or the host → 204 |
+| POST   | `/sessions/{id}/qr/show`     | publisher token   | Bring the QR card back: the host only, a subscriber token gets 401 → 204     |
+| GET    | `/sessions/{id}/subscribe`   | subscriber token  | SSE stream of `{code, ts, qr_hidden}`; `code` is `null` when there is no room |
 | DELETE | `/sessions/{id}`             | publisher token   | End the session immediately → 204                                            |
 | GET    | `/`                          | none              | A one-line landing page                                                      |
 | GET    | `/j`                         | none              | The player page (`relay/static/player.html`)                                 |
@@ -273,6 +275,10 @@ stream while its page is hidden, so a clear can happen while it isn't listening;
 on reconnecting it learns the room is gone. A code stays current until the host
 publishes another or clears it, and publishing the same code after a clear
 reaches the phones again.
+
+Every event also carries `qr_hidden`, and a hide or show repeats the current
+room (the same `code` and `ts`, or `null` when there is none) so the page sees
+an unchanged room and leaves its game alone.
 
 Serving a code at any age is safe because a code is only current while its pack
 is running: the launcher clears it when the pack exits, with

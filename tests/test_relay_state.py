@@ -196,6 +196,49 @@ def test_the_current_code_of_an_unknown_session_is_none():
     assert make().current_code("nope") is None
 
 
+# --- the QR flag --------------------------------------------------------
+
+def test_a_new_session_shows_its_qr():
+    assert RelayState(now=Clock()).create_session().qr_hidden is False
+
+
+def test_hiding_the_qr_is_a_change_only_once():
+    state = RelayState(now=Clock())
+    sid = state.create_session().session_id
+    assert state.set_qr_hidden(sid, True) is True
+    assert state.set_qr_hidden(sid, True) is False
+    assert state.session(sid).qr_hidden is True
+    assert state.set_qr_hidden(sid, False) is True
+
+
+def test_the_qr_flag_does_not_move_the_sessions_expiry():
+    clock = Clock()
+    state = RelayState(now=clock)
+    sid = state.create_session().session_id
+    before = state.expires_at(sid)
+    clock.t += 60
+    state.set_qr_hidden(sid, True)
+    assert state.expires_at(sid) == before
+
+
+def test_the_qr_flag_does_not_extend_a_session_that_has_a_room():
+    # The test above has no room, so the roomless deadline binds and a bump to
+    # last_activity would not show. With a room, the idle deadline is the one.
+    clock = Clock()
+    state = RelayState(now=clock)
+    sid = state.create_session().session_id
+    state.publish(sid, "WEWW", 1000.0)
+    before = state.expires_at(sid)
+    clock.t += 60
+    state.set_qr_hidden(sid, True)
+    assert state.expires_at(sid) == before
+
+
+def test_the_qr_flag_of_an_unknown_session_is_a_key_error():
+    with pytest.raises(KeyError):
+        RelayState(now=Clock()).set_qr_hidden("nope", True)
+
+
 # --- activity and expiry ------------------------------------------------
 # A session with no room ends at ROOMLESS_SECONDS, so the tests below that are
 # about the idle and lifetime rules publish a code first. Without one, the
