@@ -423,6 +423,10 @@ Outward-facing: **ask the user before pushing and before touching the VPS or the
   - **Pack switch:** the QR stays hidden.
   - **Safety net:** quit, lock every phone, launch again: the card comes back.
   - **Megapicker:** launch from it. The card shows above the pack when it should, and never stays over the Megapicker after a pack quits.
-  - **× on the PC** hides it.
+  - **× on the PC** hides it. After ×, the game still has the keyboard.
+  - **Steam's Stop:** press it while the card is up. The card goes, and Steam returns to Play.
+  - **What the card covers:** for each pack, note what it covers in the lobby: the room code, the player list, the VIP's start prompt. It takes about 21% of the width and 46% of the height.
+  - **Safety net over a real Megapicker night:** note how often it brings the QR back.
+  - **A pack that covers the card:** if any pack ever does, record which one (re-raising on each poll should prevent it).
   - Then run the rest of the 2026-10-27 checklist: refresh mid-game, a late join via Invite (and the iPhone's bottom edge), quitting goes to waiting, and dead-stream watching. Confirm in the relay journal that `POST /sessions/<id>/qr/hide` appears and that no session `DELETE` appears on a quit.
 - [ ] **Step 6:** Fix anything found (superpowers:systematic-debugging), then superpowers:finishing-a-development-branch.

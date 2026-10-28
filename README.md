@@ -186,8 +186,11 @@ to.
 
 The QR sits on a white card in the top-right of the screen, over the game, until
 someone decides everyone is in: tap **Hide QR on TV** in the page's ⋯ menu on a
-phone, or click the × on the card at the PC. It stays hidden for the rest of the
-night, through every pack you switch to. A launch while no phone is connected
+phone, or click the × on the card at the PC. On a PC with several monitors the
+card goes in the top-right of the primary monitor, found with `xrandr` (Arch
+package `xorg-xrandr`); without it, the card goes in the top-right of the whole
+desktop, which can be a different monitor. The QR stays hidden for the rest of
+the night, through every pack you switch to. A launch while no phone is connected
 (everyone has left or locked their phone; a page stays connected only while it
 is on screen) brings it back, and so does the first launch of a new night. The
 card never takes the keyboard from the game, and the game never waits for it: a
