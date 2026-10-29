@@ -2,6 +2,10 @@
 
 **Date:** 2026-10-29
 **Status:** Draft
+**Amended (same day):** the head start became a *hold*: guests wait until the first player
+joins the new room, or until the hold runs out (§2 "The head start", §3.2, §3.3). The user
+saw that a 0.5 s head start can't work: the page only fills in jackbox.tv's join form, and
+the admin still has to tap Play before anyone else.
 **Replaces:** §5 ("Part 2 — optional VIP priority") of
 `2026-10-27-browser-player-page-design.md`. That section's pairing design (a host-side admin
 QR, an `/a` page and a host follow stream) is dropped. Its goal stays: the admin lands VIP.
@@ -37,8 +41,16 @@ change.
   password just says so, and that phone carries on as a guest **(Claude, not objected to)**.
 
 **The head start**
-- When a new room starts, admin phones get it first and guests get it **0.5 s** later
-  **(user)**. It's tweakable, so a later night can try another value **(user)**.
+- When a new room starts, admin phones get it first and guests are **held** **(user)**. The
+  hold ends as soon as the first player joins the new room, which is the admin tapping Play
+  **(user)**, or when it runs out. It's tweakable, so a later night can try another length
+  **(user)**.
+- "The first player joins", not "the admin joins" **(Claude, user agreed)**: during the hold
+  only admin phones have the room, and if someone typed the code off the TV and joined first,
+  VIP is gone and holding guests helps nobody.
+- The hold lasts **10 s** at most by default **(Claude)**. With the early release, guests only
+  wait that long when the admin is slow. (It was first 0.5 s with no early release; the user
+  chose 0.5 s over a suggested 10 s before seeing why a fixed delay can't work.)
 - The head start only applies while at least one admin phone is connected. A locked or absent
   admin phone means nobody waits **(Claude, not objected to)**.
 - The admin phone has a **Priority on/off** switch in the menu for nights it doesn't matter.
@@ -47,8 +59,8 @@ change.
 **Settings on the TV PC**
 - The password is set as `JBVIP_ADMIN_PASSWORD=...` in `~/.config/jbvip/relay.env`, the file
   the launcher already reads **(Claude, not objected to)**.
-- The head start is set as an optional `JBVIP_ADMIN_HEAD_START=0.5` in the same file, in
-  seconds, defaulting to 0.5 **(Claude)**. It's set there and not in the relay so it can be
+- The hold's length is set as an optional `JBVIP_ADMIN_HEAD_START=10` in the same file, in
+  seconds, defaulting to 10 **(Claude)**. It's set there and not in the relay so it can be
   changed without a deploy.
 - **No password set means no admin feature**: everyone gets each room at the same moment,
   exactly as today **(user's rule; Claude's mechanism)**.
@@ -76,7 +88,7 @@ change.
   session, and replaces any earlier registration. It's idempotent, because the launcher
   registers on every launch: a relay restart loses everything in memory, and a reused night
   already has it.
-  - The relay clamps the head start to a sane range (Claude's call: 0 to 5 s).
+  - The relay clamps the head start to a sane range (Claude's call: 0 to 30 s).
   - No registration means no admin feature for that session.
 - **Subscribing as admin.** A phone presents its key in a header with its subscribe request,
   never in the URL. If it matches, the stream is an admin stream. If not, the stream is a
@@ -95,12 +107,17 @@ change.
 
   Otherwise everything is delivered at once, as today. A clear ("no room") always goes to
   everyone at once.
+  - **Early release.** A publisher-token call names a room and says a player has joined it.
+    If guests are being held for that room (it is the current room and a window is open),
+    the window ends at once and guests get the room. Otherwise it does nothing: no window,
+    a different room, or a window that already ended **(Claude)**.
   - A guest waiting out the window keeps the room it is on; nothing else is held back.
   - A second room published during the window replaces the pending one for the guests. It
     doesn't queue a second delivery or restart the timer **(Claude)**.
   - An admin phone with Priority off connects as a guest, so it doesn't count as "an admin
     connected" **(Claude)**.
-- **No early leaks.** No event may give a guest the new room before its head start ends. That
+- **No early leaks.** No event may give a guest the new room before its head start ends (or
+  an early release for that room arrives). That
   includes the subscribe seed and QR-flag events, which repeat the current room (2026-10-28
   §5.1). During the window, a guest's events carry the room that guest is still on.
 - **Everything else is unchanged:**
@@ -117,6 +134,16 @@ change.
 - When the night's session is ready (created or resumed), the setup step registers the admin
   key and head start if a password is set.
 - A failed registration costs only the head start tonight. It never stops or delays the game.
+- **Spotting the first join.** The proxy already reads every message the game exchanges with
+  Jackbox's servers. When it sees the first player join a room, it sends the early release
+  for that room, once per room. Two formats **(Claude, from what's known of the protocols;
+  to be confirmed in real use)**:
+  - ecast: the host's websocket (`/rooms/<CODE>/play`) receives an `opcode: "client/connected"`
+    message; one whose `result.role` is `"audience"` doesn't count;
+  - Blobcast: the host's socket.io websocket receives a `CustomerJoinedRoom` event carrying
+    `roomId`.
+- A missed join (a pack whose format differs) only means guests wait the full hold. A failed
+  release call is the same. Neither ever stops or delays the game.
 - The password stays on the PC, in the mode-600 `relay.env`. Only the derived key goes over
   the network, in a request body or header, never in a command line or a log.
 
@@ -147,8 +174,8 @@ change.
 
 ## 5. Anti-goals: it fails even if it technically works when…
 
-- a guest gets the new room before the head start ends, by any route (seed, reconnect, QR
-  event, Invite page);
+- a guest gets the new room before the head start ends or a player has joined it, by any
+  route (seed, reconnect, QR event, Invite page);
 - the head start delays guests when no admin phone is connected as the room starts (guests already waiting finish the window, at most the head start, even if the admin then leaves);
 - anything changes for anyone when no password is set;
 - a wrong password, a relay error or a failed registration stops anyone playing or delays the
@@ -166,6 +193,8 @@ change.
     guest who joins during the window gets it when the window ends, and nobody waits with no
     admin connected;
   - no early leak through the seed or a QR event;
+  - an early release for the held room lets guests in at once; one for another room, with
+    no window, or with the phone's token does nothing (or 401);
   - clears go out at once;
   - wrong keys are rate-limited after the token check;
   - admin streams count towards the cap.
@@ -174,16 +203,18 @@ change.
     the browser test;
   - registration happens with a password set, and not without one;
   - a failed registration doesn't affect the launch;
-  - no key appears in a command line.
+  - no key appears in a command line;
+  - the proxy spots a first join in both formats and sends one release per room, and a
+    failed release never raises into the proxy.
 - **Browser test:**
   - entering the password makes the page admin and survives a reload;
   - a wrong password says so;
   - Priority off and Stop being admin work;
   - an admin page and a guest page on the same session receive a new room in that order;
   - the key never appears in a request URL.
-- **Real use:** with the password set on the TV PC, the admin phone taps Play as soon as the
-  room appears and lands VIP over a guest who taps immediately. If 0.5 s isn't enough, raise
-  `JBVIP_ADMIN_HEAD_START`.
+- **Real use:** with the password set on the TV PC, the admin phone taps Play and lands VIP;
+  guests' phones show the room within about a second of that, not after the full hold. If a
+  pack's guests always wait the full hold, its join format differs: capture it and add it.
 
 ## 7. Left to the builder
 
