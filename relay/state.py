@@ -37,7 +37,7 @@ SESSION_ID_BYTES = 9
 TOKEN_BYTES = 32
 # sha256 hex of the admin password; the relay never sees the password itself.
 _ADMIN_KEY = re.compile(r"[0-9a-f]{64}")
-ADMIN_HEAD_START_MAX = 5.0
+ADMIN_HEAD_START_MAX = 30.0
 
 
 @dataclass(frozen=True)

@@ -246,7 +246,8 @@ QR code.
 | DELETE | `/sessions/{id}/code`        | publisher token   | Clear the room: the host quit a pack; phones go back to waiting → 204        |
 | POST   | `/sessions/{id}/qr/hide`     | publisher or subscriber token | Hide the TV's QR card for the rest of the night: any phone, or the host → 204 |
 | POST   | `/sessions/{id}/qr/show`     | publisher token   | Bring the QR card back: the host only, a subscriber token gets 401 → 204     |
-| PUT    | `/sessions/{id}/admin`       | publisher token   | Register tonight's admin key `{key, head_start}` (`key` = 64 lowercase hex, a sha256 of the password; `head_start` seconds, clamped to 0 to 5) → 204; 400 for a bad body. Charged to the publish budget |
+| PUT    | `/sessions/{id}/admin`       | publisher token   | Register tonight's admin key `{key, head_start}` (`key` = 64 lowercase hex, a sha256 of the password; `head_start` seconds, clamped to 0 to 30) → 204; 400 for a bad body. Charged to the publish budget |
+| POST   | `/sessions/{id}/release`     | publisher token   | Body `{code}`: end the head start early when `code` is the room being held → 204 whether or not anything was released; 400 for a bad body. Charged to the publish budget |
 | GET    | `/sessions/{id}/subscribe`   | subscriber token  | SSE stream of `{code, ts, qr_hidden}`; `code` is `null` when there is no room. Optional request header `X-Jbvip-Admin: <key>`; the response always carries `X-Jbvip-Admin: admin\|guest\|wrong\|off\|limited` (guest = no key sent, off = key sent but none registered, limited = the 10-per-minute wrong-key budget is spent) |
 | DELETE | `/sessions/{id}`             | publisher token   | End the session immediately → 204                                            |
 | GET    | `/`                          | none              | A one-line landing page                                                      |
@@ -283,12 +284,14 @@ an unchanged room and leaves its game alone.
 
 When the host has registered an admin key with a head start above zero and an
 admin stream is connected, a publish that changes the room reaches the admin
-streams at once and the guests only that many seconds later (at most 5), so the
+streams at once and the guests only that many seconds later (at most 30), so the
 admin taps Play first and becomes the Jackbox VIP. Until then every event a
 guest gets, the subscribe seed and QR-flag repeats included, carries the room
 that guest is still on. A second room inside the window replaces the pending
 one without restarting the timer. A clear reaches everyone at once and ends the
-window; so does the session ending. With no admin connected when the room changes nothing is held; guests already
+window; so does the session ending, and so does `POST /sessions/{id}/release`
+naming the held room (the first player has joined), which lets the guests in at
+once and does nothing for any other room or when no window is open. With no admin connected when the room changes nothing is held; guests already
 waiting finish the window even if the admin then leaves.
 
 Serving a code at any age is safe because a code is only current while its pack

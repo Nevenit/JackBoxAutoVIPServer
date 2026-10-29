@@ -359,6 +359,33 @@ class Relay:
         # every exit and has no use for the difference.
         return Response(status_code=204)
 
+    async def release_guests(self, request):
+        """The first player joined: end the head start, for the held room only."""
+        session_id = request.path_params["session_id"]
+        refusal = self._refuse(request, session_id)
+        if refusal is not None:
+            return refusal
+        throttled = self._over_budget(session_id)
+        if throttled is not None:
+            return throttled
+        try:
+            code = (await request.json())["code"]
+        except (ValueError, TypeError, KeyError):
+            return JSONResponse({"error": "bad request"}, status_code=400)
+        if not isinstance(code, str):
+            return JSONResponse({"error": "bad request"}, status_code=400)
+        if self.state.session(session_id) is None:
+            # The session expired inside the await above.
+            return JSONResponse({"error": "no such session"}, status_code=404)
+        current = self.state.current_code(session_id)
+        if (session_id in self._guest_room and current is not None
+                and current.code == code):
+            timer = self._guest_timer.pop(session_id, None)
+            if timer is not None:
+                timer.cancel()
+            self._guests_catch_up(session_id)
+        return Response(status_code=204)
+
     def _set_qr_hidden(self, request, hidden, *, either):
         """Shared by hide and show, which differ in the flag and in who may ask."""
         session_id = request.path_params["session_id"]
@@ -535,6 +562,8 @@ def build_app(state: RelayState, *, create_limiter=None,
                   methods=["POST"]),
             Route("/sessions/{session_id}/code", relay.clear_code,
                   methods=["DELETE"]),
+            Route("/sessions/{session_id}/release", relay.release_guests,
+                  methods=["POST"]),
             Route("/sessions/{session_id}/qr/hide", relay.hide_qr,
                   methods=["POST"]),
             Route("/sessions/{session_id}/qr/show", relay.show_qr,

@@ -1249,6 +1249,65 @@ async def test_admin_gets_a_new_room_at_once_and_the_guest_after_the_head_start(
             assert took < 0.7
 
 
+async def release(http, s, code, token=None):
+    return await http.post(f"/sessions/{s['session_id']}/release", json={"code": code},
+                           headers=auth(token or s["publisher_token"]))
+
+
+async def test_an_early_release_lets_held_guests_in_at_once():
+    _, app = make()
+    async with serving(app) as http, night(http, head_start=5) as s:
+        async with guest_stream(http, s) as g:
+            await feed_event(g)
+            await put_room(http, s, "ABCD")
+            assert (await feed_event(s["admin"], 0.1))["code"] == "ABCD"
+            with pytest.raises(asyncio.TimeoutError):
+                await feed_event(g, 0.1)
+            assert (await release(http, s, "ABCD")).status_code == 204
+            event, took = await timed(feed_event(g, 1.0))
+            assert event["code"] == "ABCD"
+            assert took < 0.5
+            with pytest.raises(asyncio.TimeoutError):
+                await feed_event(g, 0.3)
+
+
+async def test_a_release_for_another_room_changes_nothing():
+    _, app = make()
+    async with serving(app) as http, night(http, head_start=1) as s:
+        async with guest_stream(http, s) as g:
+            await feed_event(g)
+            await put_room(http, s, "ABCD")
+            assert (await release(http, s, "WXYZ")).status_code == 204
+            with pytest.raises(asyncio.TimeoutError):
+                await feed_event(g, 0.3)
+            assert (await feed_event(g, 2.0))["code"] == "ABCD"
+
+
+async def test_a_release_with_no_window_open_is_a_no_op():
+    _, app = make()
+    async with serving(app) as http, night(http, admin=False) as s:
+        async with guest_stream(http, s) as g:
+            await feed_event(g)
+            await put_room(http, s, "ABCD")
+            assert (await feed_event(g, 0.1))["code"] == "ABCD"
+            assert (await release(http, s, "ABCD")).status_code == 204
+            with pytest.raises(asyncio.TimeoutError):
+                await feed_event(g, 0.3)
+
+
+async def test_release_needs_the_publisher_token_and_a_code():
+    _, app = make()
+    async with serving(app) as http, night(http) as s:
+        assert (await release(http, s, "ABCD", s["subscriber_token"])).status_code == 401
+        gone = await http.post("/sessions/nope/release", json={"code": "ABCD"},
+                               headers=auth(s["publisher_token"]))
+        assert gone.status_code == 404
+        for body in ({}, {"code": 5}, [1]):
+            r = await http.post(f"/sessions/{s['session_id']}/release", json=body,
+                                headers=auth(s["publisher_token"]))
+            assert r.status_code == 400
+
+
 async def test_without_an_admin_connected_the_guest_gets_it_at_once():
     _, app = make()
     async with serving(app) as http, night(http, admin=False) as s:

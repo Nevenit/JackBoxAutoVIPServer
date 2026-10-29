@@ -526,8 +526,8 @@ def test_register_admin_clamps_head_start_and_replaces():
     s = state.create_session()
     state.register_admin(s.session_id, KEY, -1)
     assert s.head_start == 0
-    state.register_admin(s.session_id, OTHER_KEY, 9)
-    assert s.head_start == 5
+    state.register_admin(s.session_id, OTHER_KEY, 99)
+    assert s.head_start == 30
     assert state.admin_status(s.session_id, KEY) == "wrong"
 
 
