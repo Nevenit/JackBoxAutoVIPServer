@@ -1204,12 +1204,13 @@ async def feed_events(feed, count, timeout=3.0):
 async def night(http, *, admin=True, head_start=HEAD_START):
     """A registered session with an open admin stream (unless admin=False)."""
     s = await new_session(http)
-    await register(http, s, head_start=head_start)
+    assert (await register(http, s, head_start=head_start)).status_code == 204
     async with contextlib.AsyncExitStack() as stack:
         if admin:
             r = await stack.enter_async_context(http.stream(
                 "GET", subscribe_url(s),
                 headers={**auth(s["subscriber_token"]), "X-Jbvip-Admin": ADMIN_KEY}))
+            assert r.headers["X-Jbvip-Admin"] == "admin"
             feed = s["admin"] = Feed(r)
             assert (await feed_event(feed))["code"] is None
         yield s
@@ -1313,10 +1314,13 @@ async def test_two_publishes_in_one_window_give_the_guest_one_event():
         async with guest_stream(http, s) as g:
             await feed_event(g)
             await put_room(http, s, "ONEE")
+            timer = app.state.relay._guest_timer[s["session_id"]]
+            await asyncio.sleep(0.2)
             await put_room(http, s, "TWOO")
+            assert app.state.relay._guest_timer[s["session_id"]] is timer  # not restarted
             event, took = await timed(feed_event(g, 1.0))
             assert event["code"] == "TWOO"
-            assert took < 0.7  # the timer was not restarted by the second publish
+            assert took < HEAD_START  # well before a full head start after the second publish
             with pytest.raises(asyncio.TimeoutError):
                 await feed_event(g, 0.5)
 
