@@ -62,6 +62,16 @@ def arrange(monkeypatch, night, *, env_write_fails=False):
     monkeypatch.setattr(qr_window, "show_card", did.cards.append)
     monkeypatch.setattr(qr_window, "session_status", did.statuses.append)
     monkeypatch.setattr(qr_window, "delete_session", did.deleted.append)
+    did.registered = []
+    did.register_result = True
+
+    def register_admin(credentials, key, head_start):
+        did.registered.append((credentials, key, head_start))
+        return did.register_result
+
+    monkeypatch.setattr(qr_window, "register_admin", register_admin)
+    monkeypatch.delenv("JBVIP_ADMIN_PASSWORD", raising=False)
+    monkeypatch.delenv("JBVIP_ADMIN_HEAD_START", raising=False)
     return did
 
 
@@ -320,3 +330,27 @@ def test_qr_png_is_none_when_qrencode_fails(monkeypatch):
 
     monkeypatch.setattr(qr_window.subprocess, "run", failing)
     assert qr_window.qr_png("https://relay.example/j#x") is None
+
+
+def test_setup_registers_the_admin_key_when_a_password_is_set(monkeypatch):
+    did = arrange(monkeypatch, Night(CREDENTIALS, 0, created=True))
+    monkeypatch.setenv("JBVIP_ADMIN_PASSWORD", "hunter2")
+    monkeypatch.setenv("JBVIP_ADMIN_HEAD_START", "1.5")
+    assert qr_window.main(ARGV) == 0
+    assert did.registered == [(CREDENTIALS, qr_window.admin_key("hunter2"), 1.5)]
+
+
+def test_setup_registers_nothing_without_a_password(monkeypatch):
+    did = arrange(monkeypatch, Night(CREDENTIALS, 0, created=True))
+    assert qr_window.main(ARGV) == 0
+    assert did.registered == []
+
+
+def test_a_failed_registration_keeps_exit_zero_and_prints_no_key(monkeypatch, capsys):
+    did = arrange(monkeypatch, Night(CREDENTIALS, 0, created=True))
+    did.register_result = False
+    monkeypatch.setenv("JBVIP_ADMIN_PASSWORD", "hunter2")
+    assert qr_window.main(ARGV) == 0
+    err = capsys.readouterr().err
+    assert "admin" in err
+    assert "hunter2" not in err and qr_window.admin_key("hunter2") not in err

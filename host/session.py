@@ -6,7 +6,9 @@ and without a display. Deliberately imports no GUI toolkit: the card in
 host/qr_window.py is glue over this, not the other way round.
 """
 import argparse
+import hashlib
 import json
+import math
 import os
 import shlex
 import sys
@@ -58,15 +60,21 @@ def _checked(value, what: str) -> str:
     return value
 
 
-def _urllib_call(url: str, method: str, token: str | None) -> dict | None:
+def _urllib_call(
+    url: str, method: str, token: str | None, body: dict | None = None
+) -> dict | None:
     """One JSON round trip. Returns None for an empty body (a 204)."""
     headers = {"Accept": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    request = urllib.request.Request(url, headers=headers, method=method)
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode()
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(url, data=data, headers=headers, method=method)
     with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
-        body = response.read()
-    return json.loads(body) if body else None
+        reply = response.read()
+    return json.loads(reply) if reply else None
 
 
 def create_session(base_url: str, *, call=_urllib_call) -> SessionCredentials:
@@ -134,6 +142,48 @@ def _quietly(credentials: SessionCredentials, method: str, suffix: str, call) ->
             f"{credentials.base_url}/sessions/{credentials.session_id}{suffix}",
             method,
             credentials.publisher_token,
+        )
+    except Exception:
+        return False
+    return True
+
+
+ADMIN_HEAD_START_DEFAULT = 0.5
+
+
+def admin_key(password: str) -> str:
+    """The relay never sees the password, only this."""
+    return hashlib.sha256(("jbvip-admin:" + password).encode("utf-8")).hexdigest()
+
+
+def admin_head_start(raw: str | None) -> float:
+    """Seconds admins get each new room before guests; the relay clamps it."""
+    if not raw:
+        return ADMIN_HEAD_START_DEFAULT
+    try:
+        value = float(raw)
+        if math.isfinite(value):
+            return value
+    except ValueError:
+        pass
+    print(
+        f"jbvip: warning: JBVIP_ADMIN_HEAD_START is not a number; using "
+        f"{ADMIN_HEAD_START_DEFAULT}",
+        file=sys.stderr,
+    )
+    return ADMIN_HEAD_START_DEFAULT
+
+
+def register_admin(
+    credentials: SessionCredentials, key: str, head_start: float, *, call=_urllib_call
+) -> bool:
+    """Give the relay tonight's admin key. Never raises."""
+    try:
+        call(
+            f"{credentials.base_url}/sessions/{credentials.session_id}/admin",
+            "PUT",
+            credentials.publisher_token,
+            {"key": key, "head_start": head_start},
         )
     except Exception:
         return False

@@ -10,7 +10,11 @@ import pytest
 
 from host import session as host_session
 from host.session import (
+    ADMIN_HEAD_START_DEFAULT,
     Night,
+    admin_head_start,
+    admin_key,
+    register_admin,
     SessionCredentials,
     SessionStatus,
     card_should_stay,
@@ -47,8 +51,8 @@ class RecordingCall:
         self.responses = list(responses)
         self.exception = exception
 
-    def __call__(self, url, method, token):
-        self.calls.append((url, method, token))
+    def __call__(self, url, method, token, body=None):
+        self.calls.append((url, method, token) if body is None else (url, method, token, body))
         if self.exception is not None:
             raise self.exception
         response = self.responses.pop(0) if self.responses else None
@@ -627,9 +631,9 @@ def test_the_transport_sends_no_authorization_header_when_there_is_no_token(
 # the suite. The scheme downgrade is the only thing altered.
 
 
-def downgrading_call(url, method, token):
+def downgrading_call(url, method, token, body=None):
     return host_session._urllib_call(
-        url.replace("https://", "http://"), method, token
+        url.replace("https://", "http://"), method, token, body
     )
 
 
@@ -733,3 +737,56 @@ async def test_the_real_client_hides_and_shows_a_real_qr():
             show_qr, credentials, call=downgrading_call
         ) is True
         assert await hidden() is False
+
+
+# --- the admin key ------------------------------------------------------------
+
+def test_admin_key_matches_the_shared_vector():
+    assert admin_key("hunter2") == (
+        "d2f597d1c562c90fdcb4f02255abdf38aee33a342ed215663554309fb17091c6"
+    )
+
+
+@pytest.mark.parametrize("raw,expected", [
+    (None, 0.5), ("", 0.5), ("1.25", 1.25), ("abc", 0.5), ("nan", 0.5), ("inf", 0.5),
+])
+def test_admin_head_start_parses_or_defaults(raw, expected, capsys):
+    assert admin_head_start(raw) == expected
+    assert ADMIN_HEAD_START_DEFAULT == 0.5
+    assert ("warning" in capsys.readouterr().err.lower()) == (raw in ("abc", "nan", "inf"))
+
+
+def test_register_admin_puts_the_key_with_the_publisher_token():
+    call = RecordingCall()
+    assert register_admin(CREDENTIALS, "k" * 64, 0.5, call=call) is True
+    assert call.calls == [(
+        "https://relay.example/sessions/sess-1/admin", "PUT", "pub-token",
+        {"key": "k" * 64, "head_start": 0.5},
+    )]
+
+
+def test_register_admin_never_raises():
+    call = RecordingCall(exception=urllib.error.URLError("down"))
+    assert register_admin(CREDENTIALS, "k" * 64, 0.5, call=call) is False
+
+
+async def test_the_real_client_registers_a_key_the_relay_then_honours():
+    state = RelayState(now=Clock())
+    async with serving(build_app(state)) as http:
+        base = f"https://127.0.0.1:{http.base_url.port}"
+        credentials = await asyncio.to_thread(
+            create_session, base, call=downgrading_call
+        )
+        key = admin_key("hunter2")
+        assert await asyncio.to_thread(
+            register_admin, credentials, key, 0.5, call=downgrading_call
+        ) is True
+        async with http.stream(
+            "GET",
+            f"/sessions/{credentials.session_id}/subscribe",
+            headers={
+                "Authorization": f"Bearer {credentials.subscriber_token}",
+                "X-Jbvip-Admin": key,
+            },
+        ) as response:
+            assert response.headers["X-Jbvip-Admin"] == "admin"

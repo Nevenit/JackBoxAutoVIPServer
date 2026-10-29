@@ -24,6 +24,9 @@ import sys
 import tkinter as tk
 
 from host.session import (
+    admin_head_start,
+    admin_key,
+    register_admin,
     CARD_POLL_SECONDS,
     card_should_stay,
     card_wanted,
@@ -311,6 +314,14 @@ def main(argv=None) -> int:
             file=sys.stderr,
         )
         return 1
+    password = os.environ.get("JBVIP_ADMIN_PASSWORD", "")
+    if password and not register_admin(
+        night.credentials,
+        admin_key(password),
+        admin_head_start(os.environ.get("JBVIP_ADMIN_HEAD_START")),
+    ):
+        # No key, no password: this line may end up in a log.
+        print("jbvip: could not register the admin password with the relay", file=sys.stderr)
     return 0
 
 

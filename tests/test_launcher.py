@@ -823,3 +823,46 @@ def test_the_readme_does_not_tell_the_user_to_export_the_relay_variables(variabl
     readme = README.read_text()
     assert f"export {variable}" not in readme
     assert "~/.config/jbvip/relay.env" in readme
+
+
+# --- the admin password ---------------------------------------------------------
+
+def setup_call_text() -> str:
+    text = LAUNCHER.read_text().replace("\\\n", " ")
+    return next(line for line in text.splitlines() if "host.qr_window" in line)
+
+
+def test_the_admin_password_reaches_the_setup_step_intact(tmp_path):
+    home = tmp_path / "home"
+    (home / ".config/jbvip").mkdir(parents=True)
+    (home / ".config/jbvip/relay.env").write_text(
+        "JBVIP_ADMIN_PASSWORD='p w\"$x'\nJBVIP_ADMIN_HEAD_START=2\n"
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "python3"  # shows its environment, as the real setup step sees it
+    fake.write_text("#!/bin/sh\nprintf '%s|%s\\n' \"$JBVIP_ADMIN_PASSWORD\" \"$JBVIP_ADMIN_HEAD_START\"\n")
+    fake.chmod(0o755)
+    call = setup_call_text().strip()[len("if "):].split("python3 -m host.qr_window")
+    script = (
+        "set -euo pipefail\n" + relay_config_block()
+        + "\ndeclare +x JBVIP_ADMIN_PASSWORD JBVIP_ADMIN_HEAD_START\n"
+        + call[0] + "python3 -m host.qr_window\n"
+    )
+    done = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True,
+        env={"HOME": str(home), "PATH": f"{bin_dir}:/usr/bin:/bin"},
+    )
+    assert done.stdout.strip() == 'p w"$x|2', done.stdout + done.stderr
+
+
+def test_the_admin_variables_are_not_exported_and_not_on_a_command_line():
+    text = LAUNCHER.read_text()
+    assert "declare +x JBVIP_ADMIN_PASSWORD JBVIP_ADMIN_HEAD_START" in text
+    assert "export JBVIP_ADMIN" not in text
+    # The only use is an env assignment in front of python3, never an argument.
+    setup = setup_call_text()
+    assert 'JBVIP_ADMIN_PASSWORD="$JBVIP_ADMIN_PASSWORD"' in setup
+    assert setup.index("JBVIP_ADMIN_PASSWORD") < setup.index("python3")
+    assert "JBVIP_ADMIN" not in setup.split("python3", 1)[1]
+    assert "JBVIP_ADMIN" not in mitmdump_line()

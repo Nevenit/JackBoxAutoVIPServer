@@ -74,7 +74,12 @@ if [ -r "$RELAY_ENV" ]; then . "$RELAY_ENV" || echo "jbvip: $RELAY_ENV has an er
 PORT="${JBVIP_PROXY_PORT:-8081}"
 # Normalise unset to empty so `set -u` stays safe, and so a run invoked directly
 # from a shell (rather than by Steam) still honours a real environment variable.
+JBVIP_ADMIN_PASSWORD="${JBVIP_ADMIN_PASSWORD:-}"
+JBVIP_ADMIN_HEAD_START="${JBVIP_ADMIN_HEAD_START:-}"
 JBVIP_RELAY_URL="${JBVIP_RELAY_URL:-}"
+# Only the setup step below gets these, as env assignments on its command (never
+# argv); `+x` keeps them out of mitmdump and the game.
+declare +x JBVIP_ADMIN_PASSWORD JBVIP_ADMIN_HEAD_START
 CGROUP=/sys/fs/cgroup/net_cls/jbvip
 
 # The transparent redirect must be active, or the game's traffic never reaches us.
@@ -192,7 +197,7 @@ if [ -n "$JBVIP_RELAY_URL" ]; then
   # The `if` matters: this exits non-zero when the relay is unreachable, and
   # under `set -e` a bare call would end the script and the game would never
   # launch. A dead VPS must never cost a game night.
-  if python3 -m host.qr_window --base-url "$JBVIP_RELAY_URL" \
+  if JBVIP_ADMIN_PASSWORD="$JBVIP_ADMIN_PASSWORD" JBVIP_ADMIN_HEAD_START="$JBVIP_ADMIN_HEAD_START" python3 -m host.qr_window --base-url "$JBVIP_RELAY_URL" \
        --session-env "$SESSION_ENV" \
        --night-file "$NIGHT_FILE"; then
     if [ -r "$SESSION_ENV" ]; then
