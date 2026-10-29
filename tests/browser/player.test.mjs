@@ -454,13 +454,15 @@ try {
     (await stored(adm, 'jbvip-admin')) === KEY && (await stored(adm, 'jbvip-priority')) === 'off');
 
   // Ruling 4: demoted mid-window, the page never steps back to the old room.
+  // A long head start so the Priority-off tap always lands inside the window.
+  await api('PUT', `/sessions/${s5.session_id}/admin`, s5.publisher_token, { key: KEY, head_start: 2 });
   await tapA(adm, 'admin-priority'); // priority on again
   await until(() => isAdmin(adm));
   const swaps = loadsOf(adm);
   await publish(s5, 'THR3');
   await until(async () => (await frameSrc(adm)) === adminRoom('THR3'));
   await tapA(adm, 'admin-priority'); // off inside the head-start window: seeded the old room
-  await sleep(800); // the window ends and the guest catch-up arrives
+  await sleep(2600); // the window ends and the guest catch-up arrives
   check('demoted mid-window, the frame never steps back to the older room',
     (await frameSrc(adm)) === adminRoom('THR3') && loadsOf(adm) === swaps + 1);
 
@@ -493,6 +495,19 @@ try {
 
   check('no request URL carries the admin key',
     requested.every((url) => !url.includes(KEY) && !url.includes('hunter2')));
+
+  // No session (/j with no fragment): becoming admin raises no page error.
+  const lone = await (await browser.createBrowserContext()).newPage();
+  const loneErrors = [];
+  lone.on('pageerror', (error) => loneErrors.push(error.message));
+  await lone.goto(`${base}/j`);
+  await signIn(lone, 'anything');
+  await sleep(300);
+  check('Become admin with no session raises no page error', loneErrors.length === 0);
+
+  // A dead night drops the admin marker.
+  await endNight(s5);
+  check('after the night ends, the admin marker is gone', await until(async () => !(await isAdmin(enter))));
 
   const tokens = [s1, s2, s3, s4, s5, s6].map((night) => night.subscriber_token);
   check('no request URL carries a token (the fragment is never sent)',
