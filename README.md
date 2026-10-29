@@ -197,8 +197,9 @@ quotes keep spaces, `$`, quotes and backticks literal; a literal `'` has to be
 written `'\''`. Use a password you don't use anywhere else. Then open the
 page's menu on a phone, type the same password under `Admin password` and press
 `Become admin` (the menu then offers `Priority: on/off` and `Stop being
-admin`). Admins get each new room a moment before the guests, set by the
-optional `JBVIP_ADMIN_HEAD_START=0.5` (seconds, at most 5). With no password
+admin`). Admins get each new room first. Guests are held until the first
+player joins (normally the admin tapping Play), or for at most
+`JBVIP_ADMIN_HEAD_START` seconds (default 10, at most 30). With no password
 set nothing is registered and nothing changes for anyone.
 
 **There is no token to configure any more.** The relay mints every credential.

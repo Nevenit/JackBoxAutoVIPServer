@@ -15,6 +15,8 @@ from extractor.roomcode import (
     extract_code_from_url,
     code_from_blobcast_request,
     code_from_blobcast_socketio,
+    joined_room_from_blobcast_socketio,
+    joined_room_from_ecast,
 )
 from extractor.relay_publisher import LOG_MARKER, RelayPublisher
 from extractor.server import RoomCodeServer
@@ -78,8 +80,8 @@ class RoomCodeExtractor:
             return None
         return code_from_blobcast_request(flow.request.pretty_url, body)
 
-    def code_from_websocket_message(self, flow) -> str | None:
-        # Websocket-only Blobcast: the code arrives as a socket.io frame.
+    def _newest_ws_text(self, flow) -> str | None:
+        # Host-filtered text of the newest websocket frame.
         if not self._is_jackbox(flow):
             return None
         ws = getattr(flow, "websocket", None)
@@ -89,10 +91,22 @@ class RoomCodeExtractor:
         if content is None:
             return None
         try:
-            text = content.decode("utf-8", "replace")
+            return content.decode("utf-8", "replace")
         except (AttributeError, UnicodeDecodeError):
             return None
-        return code_from_blobcast_socketio(text)
+
+    def code_from_websocket_message(self, flow) -> str | None:
+        # Websocket-only Blobcast: the code arrives as a socket.io frame.
+        text = self._newest_ws_text(flow)
+        return None if text is None else code_from_blobcast_socketio(text)
+
+    def joined_room_from_websocket_message(self, flow) -> str | None:
+        text = self._newest_ws_text(flow)
+        if text is None:
+            return None
+        return joined_room_from_ecast(
+            flow.request.pretty_url, text
+        ) or joined_room_from_blobcast_socketio(text)
 
     def _broadcast(self, code: str | None) -> None:
         if not code:
@@ -106,6 +120,20 @@ class RoomCodeExtractor:
         except Exception:
             # Deliberately does not log the code itself.
             logger.exception("sink %s rejected the room code", type(sink).__name__)
+
+    def _release(self, code: str | None) -> None:
+        if not code:
+            return
+        for sink in self.sinks:
+            if hasattr(sink, "release"):
+                self._spawn(self._release_safely(sink, code))
+
+    async def _release_safely(self, sink, code: str) -> None:
+        try:
+            await sink.release(code)
+        except Exception:
+            # Deliberately does not log the code itself.
+            logger.exception("sink %s failed to release the room", type(sink).__name__)
 
     # --- mitmproxy event hooks ---
     async def running(self):
@@ -140,6 +168,7 @@ class RoomCodeExtractor:
     def websocket_message(self, flow):
         # Fires per ws frame; the code arrives in the socket.io CreateRoom result.
         self._broadcast(self.code_from_websocket_message(flow))
+        self._release(self.joined_room_from_websocket_message(flow))
 
 
 RELAY_VARIABLES = ("JBVIP_RELAY_URL", "JBVIP_SESSION_ID", "JBVIP_SESSION_TOKEN")

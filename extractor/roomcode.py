@@ -107,3 +107,43 @@ def code_from_blobcast_socketio(message) -> str | None:
             if isinstance(code, str) and looks_like_code(code):
                 return code
     return None
+
+
+def joined_room_from_ecast(url: str, message: str) -> str | None:
+    """Return the room code when `message` is an ecast frame for a player joining.
+
+    The frame is JSON with opcode "client/connected"; an audience member does not
+    count. A missing result or role still does (the frame shape is unconfirmed).
+    """
+    code = extract_code_from_url(url)
+    if code is None or not isinstance(message, str):
+        return None
+    try:
+        frame = json.loads(message)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(frame, dict) or frame.get("opcode") != "client/connected":
+        return None
+    result = frame.get("result")
+    if isinstance(result, dict) and result.get("role") == "audience":
+        return None
+    return code
+
+
+def joined_room_from_blobcast_socketio(message) -> str | None:
+    """Return the roomId of a Blobcast ``CustomerJoinedRoom`` socket.io frame."""
+    if not isinstance(message, str) or not message.startswith("5:::"):
+        return None
+    try:
+        payload = json.loads(message[4:])
+    except (ValueError, TypeError):
+        return None
+    args = payload.get("args") if isinstance(payload, dict) else None
+    if not isinstance(args, list):
+        return None
+    for arg in args:
+        if isinstance(arg, dict) and arg.get("event") == "CustomerJoinedRoom":
+            code = arg.get("roomId")
+            if isinstance(code, str) and looks_like_code(code):
+                return code
+    return None

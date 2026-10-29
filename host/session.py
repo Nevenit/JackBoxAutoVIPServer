@@ -148,7 +148,7 @@ def _quietly(credentials: SessionCredentials, method: str, suffix: str, call) ->
     return True
 
 
-ADMIN_HEAD_START_DEFAULT = 0.5
+ADMIN_HEAD_START_DEFAULT = 10.0
 
 
 def admin_key(password: str) -> str:

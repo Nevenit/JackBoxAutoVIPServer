@@ -75,6 +75,7 @@ class RelayPublisher:
         if not token:
             raise ValueError("relay token must not be empty")
         self._url = f"{base_url.rstrip('/')}/sessions/{session_id}/publish"
+        self._release_url = f"{base_url.rstrip('/')}/sessions/{session_id}/release"
         self._token = token
         self._post = post
         self._attempts = attempts
@@ -83,6 +84,7 @@ class RelayPublisher:
         self._now = now
         self._last_sent: str | None = None
         self._dead = False
+        self._released: set[str] = set()
 
     async def start(self) -> None:
         return None
@@ -104,6 +106,22 @@ class RelayPublisher:
             # Backstop so nothing from this sink can escape into mitmproxy.
             # Deliberately does not log the code itself.
             logger.exception("%s publish failed unexpectedly", LOG_MARKER)
+
+    async def release(self, code: str) -> None:
+        """Tell the relay the first player joined. One attempt: the hold's timer
+        is the fallback. Never raises."""
+        if self._dead or code in self._released:
+            return
+        self._released.add(code)
+        try:
+            await asyncio.to_thread(
+                self._post, self._release_url, self._token, {"code": code}
+            )
+        except Exception as exc:
+            # Deliberately does not log the code itself.
+            logger.warning(
+                "%s release failed: %s", LOG_MARKER, type(exc).__name__
+            )
 
     async def _deliver(self, code: str) -> bool:
         """True when this code should not be offered again.

@@ -748,11 +748,11 @@ def test_admin_key_matches_the_shared_vector():
 
 
 @pytest.mark.parametrize("raw,expected", [
-    (None, 0.5), ("", 0.5), ("1.25", 1.25), ("abc", 0.5), ("nan", 0.5), ("inf", 0.5),
+    (None, 10.0), ("", 10.0), ("1.25", 1.25), ("abc", 10.0), ("nan", 10.0), ("inf", 10.0),
 ])
 def test_admin_head_start_parses_or_defaults(raw, expected, capsys):
     assert admin_head_start(raw) == expected
-    assert ADMIN_HEAD_START_DEFAULT == 0.5
+    assert ADMIN_HEAD_START_DEFAULT == 10.0
     assert ("warning" in capsys.readouterr().err.lower()) == (raw in ("abc", "nan", "inf"))
 
 

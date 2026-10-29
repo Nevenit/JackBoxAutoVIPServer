@@ -9,6 +9,8 @@ from extractor.roomcode import (
     code_from_blobcast_request,
     code_from_blobcast_socketio,
     looks_like_code,
+    joined_room_from_blobcast_socketio,
+    joined_room_from_ecast,
 )
 
 FIXTURE = Path(__file__).parent / "fixtures" / "create_room_response.json"
@@ -167,3 +169,50 @@ def test_looks_like_code_accepts_the_length_boundaries(code):
 @pytest.mark.parametrize("code", ["A", "ABCDEFGHI"])
 def test_looks_like_code_rejects_just_outside_the_length_boundaries(code):
     assert looks_like_code(code) is False
+
+
+ECAST_URL = "wss://ecast.jackboxgames.com/api/v2/rooms/ABCD/play?role=host&name=x"
+ECAST_JOIN = (
+    '{"pc":42,"opcode":"client/connected","result":{"id":2,"userId":"u1",'
+    '"name":"ALICE","role":"player","reconnect":false}}'
+)
+
+
+@pytest.mark.parametrize("message", [
+    ECAST_JOIN,
+    '{"opcode":"client/connected","result":{"id":2}}',
+    '{"opcode":"client/connected"}',
+])
+def test_ecast_join_gives_the_room(message):
+    assert joined_room_from_ecast(ECAST_URL, message) == "ABCD"
+
+
+@pytest.mark.parametrize("url,message", [
+    (ECAST_URL, ECAST_JOIN.replace('"player"', '"audience"')),
+    (ECAST_URL, '{"opcode":"client/welcome","result":{"role":"player"}}'),
+    (ECAST_URL, "not json"),
+    (ECAST_URL, "[1, 2]"),
+    ("wss://ecast.jackboxgames.com/api/v2/other", ECAST_JOIN),
+])
+def test_ecast_non_joins_give_none(url, message):
+    assert joined_room_from_ecast(url, message) is None
+
+
+BLOBCAST_JOIN = (
+    '5:::{"name":"msg","args":[{"type":"Event","event":"CustomerJoinedRoom",'
+    '"roomId":"ABCD","customerUserId":"u1","customerName":"ALICE",'
+    '"options":{"roomcode":"","name":"ALICE"}}]}'
+)
+
+
+def test_blobcast_join_gives_the_room():
+    assert joined_room_from_blobcast_socketio(BLOBCAST_JOIN) == "ABCD"
+
+
+@pytest.mark.parametrize("message", [
+    '5:::{"name":"msg","args":[{"action":"CreateRoom","roomId":"ABCD"}]}',
+    BLOBCAST_JOIN.replace('"ABCD"', '"!!"'),
+    BLOBCAST_JOIN[1:],
+])
+def test_blobcast_non_joins_give_none(message):
+    assert joined_room_from_blobcast_socketio(message) is None

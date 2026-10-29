@@ -417,3 +417,51 @@ def test_build_sinks_degrades_to_lan_only_on_a_malformed_relay_url(monkeypatch):
     assert [type(s).__name__ for s in addon_module._build_sinks()] == [
         "RoomCodeServer"
     ]
+
+
+# --- early release on the first join ---
+
+ECAST_JOIN = (
+    '{"pc":42,"opcode":"client/connected","result":{"id":2,"userId":"u1",'
+    '"name":"ALICE","role":"player","reconnect":false}}'
+)
+
+
+def _join_flow(host, url):
+    flow = _ws_message_flow(host, ECAST_JOIN)
+    flow.request.pretty_url = url
+    return flow
+
+
+class ReleasingSink(FakeSink):
+    def __init__(self):
+        super().__init__()
+        self.released = []
+
+    async def release(self, code):
+        self.released.append(code)
+
+
+async def test_first_join_releases_the_room_once_per_frame():
+    sink = ReleasingSink()
+    ext = RoomCodeExtractor(sink)
+    ext.websocket_message(_join_flow(
+        "ecast.jackboxgames.com", "wss://ecast.jackboxgames.com/api/v2/rooms/ABCD/play"))
+    await asyncio.sleep(0.05)
+    assert sink.released == ["ABCD"]
+
+
+async def test_a_sink_without_release_is_fine():
+    sink = FakeSink()
+    ext = RoomCodeExtractor(sink)
+    ext.websocket_message(_join_flow(
+        "ecast.jackboxgames.com", "wss://ecast.jackboxgames.com/api/v2/rooms/ABCD/play"))
+    await asyncio.sleep(0.05)
+
+
+async def test_a_non_jackbox_host_releases_nothing():
+    sink = ReleasingSink()
+    ext = RoomCodeExtractor(sink)
+    ext.websocket_message(_join_flow("evil.com", "wss://evil.com/api/v2/rooms/ABCD/play"))
+    await asyncio.sleep(0.05)
+    assert sink.released == []
