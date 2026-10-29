@@ -384,7 +384,110 @@ try {
   check('a night that has ended offers no button', again && await until(async () =>
     (await visible('menu-panel', hider)) && !(await visible('qr-hide-btn', hider))));
 
-  const tokens = [s1, s2, s3, s4].map((night) => night.subscriber_token);
+  // 16. Admin password. A night registered with the key of "hunter2" and a 0.3 s head start.
+  const KEY = 'd2f597d1c562c90fdcb4f02255abdf38aee33a342ed215663554309fb17091c6';
+  const s5 = await newNight();
+  await api('PUT', `/sessions/${s5.session_id}/admin`, s5.publisher_token, { key: KEY, head_start: 0.3 });
+  const adminLoads = []; // [phone, url] for every jackbox.tv load
+  const openAdminPhone = async (night) => {
+    const phone = await (await browser.createBrowserContext()).newPage();
+    phone.on('pageerror', (error) => check(`no uncaught error in an admin test page: ${error.message}`, false));
+    await phone.setRequestInterception(true);
+    phone.on('request', (request) => {
+      const url = request.url();
+      requested.push(url);
+      if (!url.startsWith('https://jackbox.tv/')) return request.continue();
+      adminLoads.push([phone, url]);
+      return request.respond({ status: 200, contentType: 'text/html', body: '<p>jackbox.tv stub</p>' });
+    });
+    await phone.goto(`${base}/j${fragment(night)}`);
+    await phone.type('#name-input', 'adm');
+    await phone.click('#name-save');
+    return phone;
+  };
+  const loadsOf = (phone) => adminLoads.filter(([p]) => p === phone).length;
+  const tapA = (p, id) => p.$eval(`#${id}`, (el) => el.click()).catch(() => {});
+  const signIn = async (p, password) => {
+    if (!(await visible('menu-panel', p))) await tapA(p, 'menu-btn');
+    await p.type('#admin-input', password);
+    await tapA(p, 'admin-become');
+  };
+  const stored = (p, key) => p.evaluate((k) => localStorage.getItem(k), key);
+  const isAdmin = (p) => visible('admin-mark', p);
+  const adminRoom = (code) => room(code, 'ADM');
+
+  const adm = await openAdminPhone(s5);
+  const guest = await openAdminPhone(s5);
+  await publish(s5, 'ONE1');
+  await until(async () => (await frameSrc(adm)) === adminRoom('ONE1') && (await frameSrc(guest)) === adminRoom('ONE1'));
+  check('a guest has no admin marker', !(await isAdmin(guest)));
+  const before = loadsOf(adm);
+  await signIn(adm, 'hunter2');
+  check('the right password makes the bar show admin', await until(() => isAdmin(adm)));
+  check('the derived key is stored, not the password',
+    (await stored(adm, 'jbvip-admin')) === KEY &&
+    !(await adm.evaluate(() => JSON.stringify(localStorage))).includes('hunter2'));
+  await sleep(500);
+  check('becoming admin does not reload the framed game', loadsOf(adm) === before);
+  await adm.reload();
+  check('a reload keeps the admin marker', await until(() => isAdmin(adm)));
+
+  // The admin gets the next room at once, the guest after the head start.
+  let admAt = 0, guestAt = 0;
+  const stamp = async () => {
+    if (!admAt && (await frameSrc(adm)) === adminRoom('TWO2')) admAt = Date.now();
+    if (!guestAt && (await frameSrc(guest)) === adminRoom('TWO2')) guestAt = Date.now();
+    return admAt && guestAt;
+  };
+  await publish(s5, 'TWO2');
+  await until(stamp, 4000);
+  check('the guest gets a new room about 0.2 s or more after the admin',
+    admAt > 0 && guestAt > 0 && guestAt - admAt >= 150);
+
+  // Priority off connects without the header.
+  await tapA(adm, 'menu-btn');
+  check('the menu says Priority: on', (await text('admin-priority', adm)) === 'Priority: on');
+  await tapA(adm, 'admin-priority');
+  check('Priority off drops the marker', await until(async () => !(await isAdmin(adm))));
+  check('and says Priority: off', (await text('admin-priority', adm)) === 'Priority: off');
+  check('and keeps the key',
+    (await stored(adm, 'jbvip-admin')) === KEY && (await stored(adm, 'jbvip-priority')) === 'off');
+
+  // Ruling 4: demoted mid-window, the page never steps back to the old room.
+  await tapA(adm, 'admin-priority'); // priority on again
+  await until(() => isAdmin(adm));
+  const swaps = loadsOf(adm);
+  await publish(s5, 'THR3');
+  await until(async () => (await frameSrc(adm)) === adminRoom('THR3'));
+  await tapA(adm, 'admin-priority'); // off inside the head-start window: seeded the old room
+  await sleep(800); // the window ends and the guest catch-up arrives
+  check('demoted mid-window, the frame never steps back to the older room',
+    (await frameSrc(adm)) === adminRoom('THR3') && loadsOf(adm) === swaps + 1);
+
+  // Stop being admin.
+  await tapA(adm, 'admin-stop');
+  check('Stop being admin clears both keys', await until(async () =>
+    (await stored(adm, 'jbvip-admin')) === null && (await stored(adm, 'jbvip-priority')) === null));
+  check('and the sign-in form is back', await until(() => visible('admin-input', adm)));
+
+  // A wrong password.
+  await signIn(adm, 'nope');
+  check('a wrong password says so', await until(async () =>
+    (await text('admin-note', adm)) === 'Wrong admin password'));
+  check('and clears the stored key', (await stored(adm, 'jbvip-admin')) === null && !(await isAdmin(adm)));
+
+  // No registration tonight.
+  const s6 = await newNight();
+  const bare = await openAdminPhone(s6);
+  await signIn(bare, 'hunter2');
+  check('with no registration, says No admin tonight', await until(async () =>
+    (await text('admin-note', bare)) === 'No admin tonight'));
+  check('and keeps the key', (await stored(bare, 'jbvip-admin')) === KEY);
+
+  check('no request URL carries the admin key',
+    requested.every((url) => !url.includes(KEY) && !url.includes('hunter2')));
+
+  const tokens = [s1, s2, s3, s4, s5, s6].map((night) => night.subscriber_token);
   check('no request URL carries a token (the fragment is never sent)',
     requested.every((url) => !tokens.some((token) => url.split('#')[0].includes(token))));
 } finally {

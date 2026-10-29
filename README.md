@@ -189,8 +189,8 @@ reach it.
 **Optional: an admin password.** Add `JBVIP_ADMIN_PASSWORD=your-password` to
 `relay.env` and each night's launch registers a key derived from it (the
 password itself never leaves this PC) with the session. Then open the page's
-menu on a phone, choose the admin sign-in and enter the same password to become
-an admin; admins get each new room a moment before the guests, set by the
+menu on a phone, type the same password under `Admin password` and press
+`Become admin` (the menu then offers `Priority: on/off` and `Stop being admin`); admins get each new room a moment before the guests, set by the
 optional `JBVIP_ADMIN_HEAD_START=0.5` (seconds, at most 5). With no password
 set nothing is registered and nothing changes for anyone.
 

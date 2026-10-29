@@ -29,6 +29,8 @@
   input { font: inherit; font-size: 16px; color: inherit; width: min(260px, 80vw);
           box-sizing: border-box; padding: 10px; border: 1px solid #444; border-radius: 8px;
           background: #1e1e24; text-align: center; text-transform: uppercase; }
+  input[type=password] { text-transform: none; }
+  #admin-note { color: #aaa; font-size: 13px; }
   #qr { width: min(72vw, 300px); image-rendering: pixelated; }
   a { color: #8ab4ff; }
   [hidden] { display: none !important; }
@@ -39,6 +41,7 @@
   <div id="bar">
     <span id="code"></span>
     <span id="status"></span>
+    <b id="admin-mark" hidden>admin</b>
     <button id="invite-btn" type="button">Invite</button>
     <button id="menu-btn" type="button" aria-label="Menu">⋯</button>
   </div>
@@ -66,6 +69,11 @@
       <button id="rename-btn" type="button">Change name (from the next game)</button>
       <button id="reload-btn" type="button">Reload game</button>
       <a id="direct-link" target="_blank" rel="noopener">Open this room in jackbox.tv</a>
+      <span id="admin-note"></span>
+      <input id="admin-input" type="password" placeholder="Admin password" autocomplete="off">
+      <button id="admin-become" type="button">Become admin</button>
+      <button id="admin-priority" type="button"></button>
+      <button id="admin-stop" type="button">Stop being admin</button>
       <button id="menu-close" type="button">Close</button>
     </div>
   </div>
@@ -77,6 +85,8 @@ const $ = (id) => document.getElementById(id);
 const frame = $("frame");
 
 const NAME_KEY = "jbvip-name";
+const ADMIN_KEY = "jbvip-admin";       // the hex key derived from the password, never the password
+const PRIORITY_KEY = "jbvip-priority"; // "off" while an admin chooses to be treated as a guest
 const KEEPALIVE_MS = 20000; // the relay's keepalive interval
 const MAX_RETRY_MS = 15000;
 // The bar's status for each connection state; "live" says "in game" or "waiting".
@@ -100,18 +110,33 @@ let connection = "none"; // none | connecting | live | retrying | ended | refuse
 let latest = null;      // the room the relay last announced; null while there's none
 let qrHidden = true;    // the TV's QR card is hidden; stays true until the relay says it's up
 let current = null;     // the room in the frame
+let currentTs = 0;      // when the host saw it; an older room never replaces it
+let latestTs = 0;
+let adminKey = loadItem(ADMIN_KEY);
+let priorityOff = loadItem(PRIORITY_KEY) === "off";
+let adminState = "";    // the relay's answer to our key: admin | guest | wrong | off | limited
 let overlay = null;     // id of the panel open on top: invite, menu or rename
 let stream = null;      // AbortController of the open subscription
 let retryTimer = 0;
 let retryDelay = 1000;
 
-function loadName() {
-  try { return localStorage.getItem(NAME_KEY) || ""; } catch { return ""; }
+function loadItem(key) {
+  try { return localStorage.getItem(key) || ""; } catch { return ""; }
 }
 
-function storeName(value) {
-  try { localStorage.setItem(NAME_KEY, value); } catch {} // blocked storage: kept for this visit
+function saveItem(key, value) { // "" removes it; blocked storage: kept for this visit
+  try { value ? localStorage.setItem(key, value) : localStorage.removeItem(key); } catch {}
 }
+
+function loadName() { return loadItem(NAME_KEY); }
+
+function storeName(value) { saveItem(NAME_KEY, value); }
+
+const ADMIN_NOTE = {
+  wrong: "Wrong admin password",
+  off: "No admin tonight",
+  limited: "Too many tries; try again in a minute",
+};
 
 // "#<session_id>.<subscriber_token>": both are URL-safe base64, so neither has a dot.
 function parseHash() {
@@ -140,14 +165,20 @@ function render() {
   $("wait-text").textContent = PROBLEM[connection] || "Waiting for the host to pick a game…";
   $("invite-btn").hidden = !session;
   $("qr-hide-btn").hidden = qrHidden || connection !== "live";
+  $("admin-mark").hidden = adminState !== "admin";
+  $("admin-note").textContent = ADMIN_NOTE[adminState] || "";
+  $("admin-input").hidden = $("admin-become").hidden = !!adminKey;
+  $("admin-priority").hidden = $("admin-stop").hidden = !adminKey;
+  $("admin-priority").textContent = priorityOff ? "Priority: off" : "Priority: on";
   $("reload-btn").hidden = $("direct-link").hidden = !current;
 }
 
 // Frame a room, or empty the frame for null. The room already in the frame is left
 // alone: a reconnect re-sends it, and reloading would pull the player out of the game.
-function show(code) {
+function show(code, ts) {
   if (code === current) return;
   current = code;
+  currentTs = ts;
   if (!code) return frame.removeAttribute("src");
   const url = roomUrl(code);
   frame.src = url;
@@ -155,9 +186,10 @@ function show(code) {
 }
 
 // A room code from the relay, or null when the host has no room.
-function onCode(code) {
+function onCode(code, ts) {
   latest = code;
-  if (name) show(code); // before the first name, the room waits in `latest`
+  latestTs = ts;
+  if (name) show(code, ts); // before the first name, the room waits in `latest`
   render();
 }
 
@@ -165,7 +197,10 @@ function onCode(code) {
 // onCode leaves the frame alone. An event without the flag (an older relay) counts as hidden.
 function onEvent(event) {
   qrHidden = event.qr_hidden !== false;
-  onCode(event.code);
+  // A phone demoted mid-window is re-seeded the room it was on before; stepping back to it
+  // would swap the game new, old, new. A null code (no room) always applies.
+  if (event.code && current && event.code !== current && event.ts < currentTs) return render();
+  onCode(event.code, event.ts);
 }
 
 // Server-sent events off a fetch body: blank-line-separated, and only `data:` lines matter.
@@ -197,10 +232,12 @@ async function subscribe() {
   stop();
   qrHidden = true; // a new stream knows nothing about the QR until its first event
   const controller = (stream = new AbortController());
+  const headers = { Authorization: "Bearer " + session.token };
+  if (adminKey && !priorityOff) headers["X-Jbvip-Admin"] = adminKey;
   let openedAt = 0;
   try {
     const response = await fetch("/sessions/" + session.id + "/subscribe", {
-      headers: { Authorization: "Bearer " + session.token },
+      headers,
       cache: "no-store",
       signal: controller.signal,
     });
@@ -209,6 +246,8 @@ async function subscribe() {
       return render();
     }
     if (!response.ok) throw new Error("HTTP " + response.status);
+    adminState = response.headers.get("X-Jbvip-Admin") || "";
+    if (adminState === "wrong") { adminKey = ""; saveItem(ADMIN_KEY, ""); }
     openedAt = Date.now();
     connection = "live";
     render();
@@ -245,7 +284,7 @@ function start() {
   latest = null;
   overlay = null;
   retryDelay = 1000;
-  show(null);
+  show(null, 0);
   render();
   if (session && document.visibilityState !== "hidden") subscribe();
 }
@@ -260,7 +299,7 @@ $("name-panel").onsubmit = (event) => {
   storeName(value);
   overlay = null;
   keepAwake();
-  show(latest); // frames a room that came before the first name; a rename changes nothing
+  show(latest, latestTs); // frames a room that came before the first name; a rename changes nothing
   render();
 };
 
@@ -316,6 +355,32 @@ $("reload-btn").onclick = () => {
   frame.src = frame.src; // the same URL again: jackbox.tv reconnects, as the code is unchanged
   overlay = null;
   render();
+};
+
+async function becomeAdmin() {
+  const password = $("admin-input").value;
+  if (!password) return;
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("jbvip-admin:" + password));
+  adminKey = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  saveItem(ADMIN_KEY, adminKey);
+  $("admin-input").value = "";
+  subscribe();
+}
+
+$("admin-become").onclick = becomeAdmin;
+$("admin-priority").onclick = () => {
+  priorityOff = !priorityOff;
+  saveItem(PRIORITY_KEY, priorityOff ? "off" : "");
+  adminState = "";
+  subscribe();
+};
+$("admin-stop").onclick = () => {
+  adminKey = "";
+  priorityOff = false;
+  adminState = "";
+  saveItem(ADMIN_KEY, "");
+  saveItem(PRIORITY_KEY, "");
+  subscribe();
 };
 
 $("menu-close").onclick = $("invite-close").onclick = () => {
