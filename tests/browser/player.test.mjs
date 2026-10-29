@@ -484,6 +484,13 @@ try {
     (await text('admin-note', bare)) === 'No admin tonight'));
   check('and keeps the key', (await stored(bare, 'jbvip-admin')) === KEY);
 
+  // Enter in the field submits, as the phone keyboard's Go does.
+  const enter = await openAdminPhone(s5);
+  await tapA(enter, 'menu-btn');
+  await enter.type('#admin-input', 'hunter2');
+  await enter.keyboard.press('Enter');
+  check('Enter in the password field makes the page admin', await until(() => isAdmin(enter)));
+
   check('no request URL carries the admin key',
     requested.every((url) => !url.includes(KEY) && !url.includes('hunter2')));
 

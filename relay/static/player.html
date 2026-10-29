@@ -30,6 +30,7 @@
           box-sizing: border-box; padding: 10px; border: 1px solid #444; border-radius: 8px;
           background: #1e1e24; text-align: center; text-transform: uppercase; }
   input[type=password] { text-transform: none; }
+  #admin-form { display: flex; flex-direction: column; align-items: center; gap: 14px; }
   #admin-note { color: #aaa; font-size: 13px; }
   #qr { width: min(72vw, 300px); image-rendering: pixelated; }
   a { color: #8ab4ff; }
@@ -70,8 +71,11 @@
       <button id="reload-btn" type="button">Reload game</button>
       <a id="direct-link" target="_blank" rel="noopener">Open this room in jackbox.tv</a>
       <span id="admin-note"></span>
-      <input id="admin-input" type="password" placeholder="Admin password" autocomplete="off">
-      <button id="admin-become" type="button">Become admin</button>
+      <form id="admin-form">
+        <input id="admin-input" type="password" placeholder="Admin password"
+               aria-label="Admin password" autocomplete="current-password">
+        <button id="admin-become" type="submit">Become admin</button>
+      </form>
       <button id="admin-priority" type="button"></button>
       <button id="admin-stop" type="button">Stop being admin</button>
       <button id="menu-close" type="button">Close</button>
@@ -167,7 +171,7 @@ function render() {
   $("qr-hide-btn").hidden = qrHidden || connection !== "live";
   $("admin-mark").hidden = adminState !== "admin";
   $("admin-note").textContent = ADMIN_NOTE[adminState] || "";
-  $("admin-input").hidden = $("admin-become").hidden = !!adminKey;
+  $("admin-form").hidden = !!adminKey;
   $("admin-priority").hidden = $("admin-stop").hidden = !adminKey;
   $("admin-priority").textContent = priorityOff ? "Priority: off" : "Priority: on";
   $("reload-btn").hidden = $("direct-link").hidden = !current;
@@ -367,7 +371,10 @@ async function becomeAdmin() {
   subscribe();
 }
 
-$("admin-become").onclick = becomeAdmin;
+$("admin-form").onsubmit = (event) => {
+  event.preventDefault();
+  becomeAdmin();
+};
 $("admin-priority").onclick = () => {
   priorityOff = !priorityOff;
   saveItem(PRIORITY_KEY, priorityOff ? "off" : "");
