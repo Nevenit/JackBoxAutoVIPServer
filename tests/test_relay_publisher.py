@@ -272,7 +272,7 @@ async def test_the_room_code_is_never_logged_when_the_session_dies(caplog):
     assert "SECRET1" not in caplog.text
 
 
-async def test_release_posts_the_code_once(caplog):
+async def test_release_posts_the_code_once():
     post = RecordingPost()
     publisher = make(post)
     await publisher.release("ABCD")
@@ -290,6 +290,24 @@ async def test_release_failure_is_not_raised_retried_or_leaky(caplog):
     assert len(post.calls) == 1
     assert LOG_MARKER in caplog.text
     assert "ABCD" not in caplog.text
+
+
+async def test_release_failure_log_names_the_http_status(caplog):
+    publisher = make(RecordingPost(failures=99, exception=http_error(404)))
+    with caplog.at_level("WARNING"):
+        await publisher.release("ABCD")
+    assert "404" in caplog.text
+    assert "ABCD" not in caplog.text
+
+
+async def test_a_failed_release_does_not_stop_publishing():
+    post = RecordingPost(failures=1, exception=http_error(404))
+    publisher = make(post)
+    await publisher.release("ABCD")
+    await publisher.set_code("WXYZ")
+    assert post.calls[-1] == (
+        "https://relay.example/sessions/sess-1/publish", "pub-token", {"code": "WXYZ", "ts": 1000.0}
+    )
 
 
 async def test_release_does_nothing_once_the_publisher_is_dead():

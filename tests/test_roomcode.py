@@ -205,6 +205,12 @@ BLOBCAST_JOIN = (
 )
 
 
+def test_big_frames_without_the_marker_give_none():
+    big = '{"opcode":"client/send","result":{"blob":"' + "x" * 100_000 + '"}}'
+    assert joined_room_from_ecast("wss://ecast.jackboxgames.com/api/v2/rooms/ABCD/play", big) is None
+    assert joined_room_from_blobcast_socketio('5:::{"name":"msg","args":[{"blob":"' + "x" * 100_000 + '"}]}') is None
+
+
 def test_blobcast_join_gives_the_room():
     assert joined_room_from_blobcast_socketio(BLOBCAST_JOIN) == "ABCD"
 

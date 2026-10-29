@@ -119,9 +119,7 @@ class RelayPublisher:
             )
         except Exception as exc:
             # Deliberately does not log the code itself.
-            logger.warning(
-                "%s release failed: %s", LOG_MARKER, type(exc).__name__
-            )
+            logger.warning("%s release failed: %s", LOG_MARKER, exc)
 
     async def _deliver(self, code: str) -> bool:
         """True when this code should not be offered again.

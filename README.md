@@ -199,7 +199,8 @@ page's menu on a phone, type the same password under `Admin password` and press
 `Become admin` (the menu then offers `Priority: on/off` and `Stop being
 admin`). Admins get each new room first. Guests are held until the first
 player joins (normally the admin tapping Play), or for at most
-`JBVIP_ADMIN_HEAD_START` seconds (default 10, at most 30). With no password
+`JBVIP_ADMIN_HEAD_START` seconds (default 10, at most 30); a pack whose join
+the proxy doesn't recognise waits the full hold. With no password
 set nothing is registered and nothing changes for anyone.
 
 **There is no token to configure any more.** The relay mints every credential.

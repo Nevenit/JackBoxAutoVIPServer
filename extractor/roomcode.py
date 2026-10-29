@@ -118,6 +118,8 @@ def joined_room_from_ecast(url: str, message: str) -> str | None:
     code = extract_code_from_url(url)
     if code is None or not isinstance(message, str):
         return None
+    if "client/connected" not in message:  # skip parsing big frames
+        return None
     try:
         frame = json.loads(message)
     except (ValueError, TypeError):
@@ -133,6 +135,8 @@ def joined_room_from_ecast(url: str, message: str) -> str | None:
 def joined_room_from_blobcast_socketio(message) -> str | None:
     """Return the roomId of a Blobcast ``CustomerJoinedRoom`` socket.io frame."""
     if not isinstance(message, str) or not message.startswith("5:::"):
+        return None
+    if "CustomerJoinedRoom" not in message:  # skip parsing big frames
         return None
     try:
         payload = json.loads(message[4:])

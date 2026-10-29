@@ -427,8 +427,15 @@ ECAST_JOIN = (
 )
 
 
-def _join_flow(host, url):
-    flow = _ws_message_flow(host, ECAST_JOIN)
+BLOBCAST_JOIN = (
+    '5:::{"name":"msg","args":[{"type":"Event","event":"CustomerJoinedRoom",'
+    '"roomId":"ABCD","customerUserId":"u1","customerName":"ALICE",'
+    '"options":{"roomcode":"","name":"ALICE"}}]}'
+)
+
+
+def _join_flow(host, url, message=ECAST_JOIN):
+    flow = _ws_message_flow(host, message)
     flow.request.pretty_url = url
     return flow
 
@@ -442,11 +449,14 @@ class ReleasingSink(FakeSink):
         self.released.append(code)
 
 
-async def test_first_join_releases_the_room_once_per_frame():
+@pytest.mark.parametrize("url, message", [
+    ("wss://ecast.jackboxgames.com/api/v2/rooms/ABCD/play", ECAST_JOIN),
+    ("wss://ecast.jackboxgames.com/socket.io/1/websocket/x", BLOBCAST_JOIN),
+])
+async def test_a_first_join_frame_releases_the_room(url, message):
     sink = ReleasingSink()
     ext = RoomCodeExtractor(sink)
-    ext.websocket_message(_join_flow(
-        "ecast.jackboxgames.com", "wss://ecast.jackboxgames.com/api/v2/rooms/ABCD/play"))
+    ext.websocket_message(_join_flow("ecast.jackboxgames.com", url, message))
     await asyncio.sleep(0.05)
     assert sink.released == ["ABCD"]
 
@@ -456,6 +466,7 @@ async def test_a_sink_without_release_is_fine():
     ext = RoomCodeExtractor(sink)
     ext.websocket_message(_join_flow(
         "ecast.jackboxgames.com", "wss://ecast.jackboxgames.com/api/v2/rooms/ABCD/play"))
+    assert ext._tasks == set()  # nothing spawned, so nothing to swallow
     await asyncio.sleep(0.05)
 
 
