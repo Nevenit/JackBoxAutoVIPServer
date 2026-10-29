@@ -11,6 +11,7 @@ import relay.app
 from relay.app import Relay, build_app
 from relay.state import (
     MAX_SESSIONS,
+    MAX_SESSION_LIFETIME_SECONDS,
     MAX_SUBSCRIBERS_PER_SESSION,
     RateLimiter,
     RelayState,
@@ -1349,3 +1350,18 @@ async def test_deleting_the_session_in_the_window_cancels_the_timer():
         assert r.status_code == 204
         assert s["session_id"] not in relay._guest_timer
         assert s["session_id"] not in relay._guest_room
+
+
+async def test_the_timer_does_not_fire_into_a_session_that_expired_unreaped():
+    clock = Clock()
+    _, app = make(clock)
+    async with serving(app) as http, night(http) as s:
+        async with guest_stream(http, s) as g:
+            await feed_event(g)
+            await put_room(http, s, "ABCD")
+            clock.t += MAX_SESSION_LIFETIME_SECONDS + 1  # dead, but nobody reaped
+            with pytest.raises(asyncio.TimeoutError):
+                await feed_event(g, HEAD_START + 0.5)
+            relay = app.state.relay
+            assert s["session_id"] not in relay._guest_room
+            assert s["session_id"] not in relay._guest_timer

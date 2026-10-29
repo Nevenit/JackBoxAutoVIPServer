@@ -145,6 +145,11 @@ class Relay:
     def _guests_catch_up(self, session_id: str) -> None:
         """The head start is over: guests get the current room."""
         self._guest_timer.pop(session_id, None)
+        if self.state.session(session_id) is None:
+            # Expired on the clock and not reaped yet: say nothing, as the
+            # host never sent a clear.
+            self._reap()
+            return
         if self._guest_room.pop(session_id, None) is not None:
             self._tell_room(session_id, "guest")
 

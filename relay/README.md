@@ -288,7 +288,8 @@ admin taps Play first and becomes the Jackbox VIP. Until then every event a
 guest gets, the subscribe seed and QR-flag repeats included, carries the room
 that guest is still on. A second room inside the window replaces the pending
 one without restarting the timer. A clear reaches everyone at once and ends the
-window; so does the session ending. With no admin connected nothing is held.
+window; so does the session ending. With no admin connected when the room changes nothing is held; guests already
+waiting finish the window even if the admin then leaves.
 
 Serving a code at any age is safe because a code is only current while its pack
 is running: the launcher clears it when the pack exits, with

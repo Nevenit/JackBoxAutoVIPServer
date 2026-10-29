@@ -149,7 +149,7 @@ change.
 
 - a guest gets the new room before the head start ends, by any route (seed, reconnect, QR
   event, Invite page);
-- the head start delays guests while no admin phone is connected;
+- the head start delays guests when no admin phone is connected as the room starts (guests already waiting finish the window, at most the head start, even if the admin then leaves);
 - anything changes for anyone when no password is set;
 - a wrong password, a relay error or a failed registration stops anyone playing or delays the
   game;
