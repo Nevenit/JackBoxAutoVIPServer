@@ -354,3 +354,11 @@ def test_a_failed_registration_keeps_exit_zero_and_prints_no_key(monkeypatch, ca
     err = capsys.readouterr().err
     assert "admin" in err
     assert "hunter2" not in err and qr_window.admin_key("hunter2") not in err
+
+
+def test_a_password_that_cannot_be_encoded_keeps_exit_zero(monkeypatch, capsys):
+    did = arrange(monkeypatch, Night(CREDENTIALS, 0, created=True))
+    monkeypatch.setenv("JBVIP_ADMIN_PASSWORD", "bad\udcff")
+    assert qr_window.main(ARGV) == 0
+    assert did.registered == []
+    assert "could not register the admin password" in capsys.readouterr().err

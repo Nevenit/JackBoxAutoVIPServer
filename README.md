@@ -86,10 +86,10 @@ updates — there is nothing per-game or per-version to maintain.
 
    On a machine that should just work after a reboot, such as a PC under the
    TV, install a service that does this at boot instead. Run this from the repo
-   folder. It runs this repo's script as root, so keep the folder writable only
-   by you:
+   folder:
 
    ```bash
+   sudo install -m 755 -o root -g root jbvip-redirect-up.sh jbvip-redirect-down.sh /usr/local/sbin/
    sudo tee /etc/systemd/system/jbvip-redirect.service >/dev/null <<EOF
    [Unit]
    Description=Redirect Jackbox games to the jbvip room-code proxy
@@ -98,14 +98,18 @@ updates — there is nothing per-game or per-version to maintain.
    [Service]
    Type=oneshot
    RemainAfterExit=yes
-   ExecStart=$PWD/jbvip-redirect-up.sh 8081 $USER
-   ExecStop=$PWD/jbvip-redirect-down.sh 8081
+   ExecStart=/usr/local/sbin/jbvip-redirect-up.sh 8081 $USER
+   ExecStop=/usr/local/sbin/jbvip-redirect-down.sh 8081
 
    [Install]
    WantedBy=multi-user.target
    EOF
-   sudo systemctl enable --now jbvip-redirect.service
+   sudo systemctl daemon-reload && sudo systemctl enable --now jbvip-redirect.service
    ```
+
+   The copies are root-owned on purpose. A script in your home folder run as
+   root at boot would let anything running as you become root. After a
+   `git pull` that changes either script, re-run the `install` line.
 
    The proxy listens on port 8081. If something else is using that port, move to
    another (say 8082) in this order: remove the old redirect with
@@ -186,11 +190,14 @@ A file rather than `export` because Steam launches the game with the environment
 the Steam client itself started with, so variables exported in a terminal never
 reach it.
 
-**Optional: an admin password.** Add `JBVIP_ADMIN_PASSWORD=your-password` to
+**Optional: an admin password.** Add `JBVIP_ADMIN_PASSWORD='your-password'` to
 `relay.env` and each night's launch registers a key derived from it (the
-password itself never leaves this PC) with the session. Then open the page's
-menu on a phone, type the same password under `Admin password` and press
-`Become admin` (the menu then offers `Priority: on/off` and `Stop being admin`); admins get each new room a moment before the guests, set by the
+password itself never leaves this PC). `relay.env` is read by bash, so single
+quotes keep spaces, `$`, quotes and backticks literal; a literal `'` has to be
+written `'\''`. Use a password you don't use anywhere else. Then open the
+page's menu on a phone, type the same password under `Admin password` and press
+`Become admin` (the menu then offers `Priority: on/off` and `Stop being
+admin`). Admins get each new room a moment before the guests, set by the
 optional `JBVIP_ADMIN_HEAD_START=0.5` (seconds, at most 5). With no password
 set nothing is registered and nothing changes for anyone.
 

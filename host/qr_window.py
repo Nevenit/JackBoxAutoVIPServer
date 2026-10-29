@@ -24,16 +24,16 @@ import sys
 import tkinter as tk
 
 from host.session import (
+    CARD_POLL_SECONDS,
     admin_head_start,
     admin_key,
-    register_admin,
-    CARD_POLL_SECONDS,
     card_should_stay,
     card_wanted,
     delete_session,
     hide_qr,
     load_night,
     qr_payload,
+    register_admin,
     resume_or_create,
     session_status,
     write_session_env,
@@ -314,12 +314,16 @@ def main(argv=None) -> int:
             file=sys.stderr,
         )
         return 1
-    password = os.environ.get("JBVIP_ADMIN_PASSWORD", "")
-    if password and not register_admin(
-        night.credentials,
-        admin_key(password),
-        admin_head_start(os.environ.get("JBVIP_ADMIN_HEAD_START")),
-    ):
+    try:
+        password = os.environ.get("JBVIP_ADMIN_PASSWORD", "")
+        registered = not password or register_admin(
+            night.credentials,
+            admin_key(password),
+            admin_head_start(os.environ.get("JBVIP_ADMIN_HEAD_START")),
+        )
+    except Exception:  # e.g. a non-UTF-8 byte in the password: never stop the launch
+        registered = False
+    if not registered:
         # No key, no password: this line may end up in a log.
         print("jbvip: could not register the admin password with the relay", file=sys.stderr)
     return 0
